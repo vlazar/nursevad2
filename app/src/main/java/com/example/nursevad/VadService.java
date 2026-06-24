@@ -38,8 +38,6 @@ public class VadService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
-        
-        // Crash logger for Service
         final Thread.UncaughtExceptionHandler defaultHandler = Thread.getDefaultUncaughtExceptionHandler();
         Thread.setDefaultUncaughtExceptionHandler((t, e) -> {
             try {
@@ -62,12 +60,11 @@ public class VadService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        // 1. IMMEDIATELY start foreground to prevent RemoteServiceException
         createNotificationChannel();
         Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
                 .setContentTitle("Nurse VAD")
                 .setContentText("Initializing...")
-                .setSmallIcon(android.R.drawable.ic_btn_speak_now) // Guaranteed system icon
+                .setSmallIcon(android.R.drawable.ic_btn_speak_now)
                 .build();
         
         try {
@@ -78,7 +75,6 @@ public class VadService extends Service {
             return START_NOT_STICKY;
         }
 
-        // 2. Handle Intents
         if (intent != null) {
             if ("STOP".equals(intent.getAction())) {
                 stopSelf();
@@ -91,7 +87,6 @@ public class VadService extends Service {
             }
         }
 
-        // 3. Heavy Initialization
         if (!isRunning) {
             isRunning = true;
             if (wakeLock != null && !wakeLock.isHeld()) wakeLock.acquire();
@@ -106,6 +101,7 @@ public class VadService extends Service {
             
             loadAudioFiles();
             startRecording();
+            EventBus.getInstance().postStatus("Listening..."); // Immediate status
             EventRepository.getInstance().addEvent(new LogEvent(LogEvent.Type.START));
         }
         return START_STICKY;
@@ -119,7 +115,7 @@ public class VadService extends Service {
                 return;
             }
             
-            audioRecord = new AudioRecord(MediaRecorder.AudioSource.MIC, 16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize);
+            audioRecord = new AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, 16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize);
             
             if (audioRecord.getState() != AudioRecord.STATE_INITIALIZED) {
                 EventBus.getInstance().postStatus("ERR: AudioRecord failed. Grant MIC permission?");
@@ -158,18 +154,20 @@ public class VadService extends Service {
 
         float prob = 0;
         if (vad != null) prob = vad.predict(chunk);
+        
+        // Real-time debug overlay
+        EventBus.getInstance().postDebug("Vol: " + percent + "% | VAD Prob: " + String.format("%.3f", prob));
 
         if (prob > 0.5 && !isSpeaking) {
             isSpeaking = true;
             speechStartMs = SystemClock.elapsedRealtime();
             accumulatedDb = 0; frameCount = 0; silenceFrames = 0;
-            EventBus.getInstance().postStatus("Listening...");
         }
 
         if (isSpeaking) {
             accumulatedDb += db;
             frameCount++;
-            if (prob < 0.35) silenceFrames++;
+            if (prob < 0.4) silenceFrames++;
             else silenceFrames = 0;
 
             if (silenceFrames > 15) { 
@@ -177,11 +175,21 @@ public class VadService extends Service {
                 long durationMs = SystemClock.elapsedRealtime() - speechStartMs;
                 int thresholdSec = SettingsManager.getDurationThreshold(this);
                 
-                if (durationMs > thresholdSec * 1000) {
+                if (durationMs >= thresholdSec * 1000) {
                     double avgDb = accumulatedDb / frameCount;
                     int avgPercent = (int) Math.round((avgDb + 50.0) / 50.0 * 100.0);
+                    avgPercent = Math.max(0, Math.min(100, avgPercent));
                     int level = getLevel(avgPercent);
-                    triggerPlay(level);
+                    
+                    String file = pickFile(level);
+                    LogEvent event = new LogEvent(LogEvent.Type.SPEECH, level, file);
+                    EventRepository.getInstance().addEvent(event);
+                    
+                    if (file != null) {
+                        triggerPlay(file);
+                    } else {
+                        EventBus.getInstance().postStatus("Listening... (No files in Level " + level + ")");
+                    }
                 }
             }
         }
@@ -196,15 +204,13 @@ public class VadService extends Service {
         return 5;
     }
 
-    private void triggerPlay(int level) {
-        String file = pickFile(level);
+    private void triggerPlay(String file) {
         if (file == null) return;
 
         isPaused = true;
-        EventBus.getInstance().postStatus("Playing: " + file);
-        LogEvent event = new LogEvent(LogEvent.Type.SPEECH, level, file);
-        EventRepository.getInstance().addEvent(event);
-
+        String fileName = Uri.parse(file).getLastPathSegment();
+        EventBus.getInstance().postStatus("Playing: " + fileName);
+        
         try {
             if (mediaPlayer != null) mediaPlayer.release();
             mediaPlayer = new MediaPlayer();
@@ -217,6 +223,7 @@ public class VadService extends Service {
             mediaPlayer.start();
         } catch (IOException e) {
             isPaused = false;
+            EventBus.getInstance().postStatus("Listening... (Playback error)");
         }
     }
 

@@ -21,7 +21,12 @@ public class LogEvent {
         this.level = level;
         this.timestamp = System.currentTimeMillis();
         this.uriString = uriString;
-        this.rawFileName = Uri.parse(uriString).getLastPathSegment();
-        this.displayName = rawFileName.replaceAll("\\.[^.]+$", "").replace("_", "").replace("-", "");
+        if (uriString != null && !uriString.isEmpty()) {
+            this.rawFileName = Uri.parse(uriString).getLastPathSegment();
+            this.displayName = rawFileName.replaceAll("\\.[^.]+$", "").replace("_", "").replace("-", "");
+        } else {
+            this.rawFileName = "No file";
+            this.displayName = "No file found";
+        }
     }
 }

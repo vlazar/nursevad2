@@ -17,38 +17,17 @@ import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
-import java.io.File;
-import java.io.PrintWriter;
-import java.util.Date;
 
 public class MainActivity extends AppCompatActivity {
     private boolean isListening = false;
     private LogAdapter adapter;
     private TextView statusText;
+    private TextView tvDebug;
     private ProgressBar volumeMeter;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        
-        // --- GLOBAL CRASH LOGGER ---
-        final Thread.UncaughtExceptionHandler defaultHandler = Thread.getDefaultUncaughtExceptionHandler();
-        Thread.setDefaultUncaughtExceptionHandler((t, e) -> {
-            try {
-                File logDir = getExternalFilesDir(null);
-                if (logDir != null) {
-                    File logFile = new File(logDir, "crash_log.txt");
-                    PrintWriter writer = new PrintWriter(logFile);
-                    writer.println("Time: " + new Date().toString());
-                    e.printStackTrace(writer);
-                    writer.close();
-                }
-            } catch (Exception ex) { /* Ignore */ }
-            if (defaultHandler != null) defaultHandler.uncaughtException(t, e);
-            else System.exit(1);
-        });
-        // ---------------------------
-
         setContentView(R.layout.activity_main);
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
@@ -62,6 +41,7 @@ public class MainActivity extends AppCompatActivity {
         }
 
         statusText = findViewById(R.id.statusText);
+        tvDebug = findViewById(R.id.tvDebug);
         volumeMeter = findViewById(R.id.volumeMeter);
         Button btnStartStop = findViewById(R.id.btnStartStop);
         ImageButton btnClear = findViewById(R.id.btnClear);
@@ -103,7 +83,9 @@ public class MainActivity extends AppCompatActivity {
                 statusText.setTextColor(getResources().getColor(android.R.color.black));
             }
         });
+        
         EventBus.getInstance().getVolume().observe(this, vol -> volumeMeter.setProgress(vol));
+        EventBus.getInstance().getDebug().observe(this, msg -> tvDebug.setText(msg));
     }
 
     @Override

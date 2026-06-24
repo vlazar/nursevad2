@@ -12,7 +12,6 @@ public class SileroVad {
     private OrtEnvironment env;
     private OrtSession session;
     
-    // Model state and context for streaming inference
     private float[][][] state;
     private float[][] context;
     private int lastSr = 0;
@@ -51,7 +50,6 @@ public class SileroVad {
         if (session == null) return 0; 
         
         int sr = 16000;
-        // Convert short[] to float[][] for ONNX
         float[][] x = new float[1][audioChunk.length];
         for (int i = 0; i < audioChunk.length; i++) {
             x[0][i] = audioChunk[i] / 32768.0f;
@@ -62,21 +60,12 @@ public class SileroVad {
             int numSamples = sr == 16000 ? 512 : 256;
             int contextSize = sr == 16000 ? 64 : 32;
 
-            // Reset states if sample rate or batch size changes
-            if (lastSr != 0 && lastSr != sr) {
-                resetStates();
-            } else if (lastBatchSize != 0 && lastBatchSize != batchSize) {
-                resetStates();
-            } else if (lastBatchSize == 0) {
-                lastBatchSize = batchSize;
-            }
+            if (lastSr != 0 && lastSr != sr) resetStates();
+            else if (lastBatchSize != 0 && lastBatchSize != batchSize) resetStates();
+            else if (lastBatchSize == 0) lastBatchSize = batchSize;
 
-            // Initialize context if empty
-            if (context.length == 0) {
-                context = new float[batchSize][contextSize];
-            }
+            if (context.length == 0) context = new float[batchSize][contextSize];
 
-            // CRITICAL: Prepend context (64 samples) to current chunk (512 samples)
             float[][] xWithContext = new float[batchSize][contextSize + numSamples];
             for (int i = 0; i < batchSize; i++) {
                 System.arraycopy(context[i], 0, xWithContext[i], 0, contextSize);
@@ -89,7 +78,6 @@ public class SileroVad {
             OrtSession.Result ortOutputs = null;
 
             try {
-                // Create tensors directly from multi-dimensional arrays
                 inputTensor = OnnxTensor.createTensor(env, xWithContext);
                 stateTensor = OnnxTensor.createTensor(env, state);
                 srTensor = OnnxTensor.createTensor(env, new long[]{sr});
@@ -101,11 +89,10 @@ public class SileroVad {
 
                 ortOutputs = session.run(inputs);
                 
-                // Extract outputs
+                // Use indices exactly as the Python wrapper does
                 float[][] output = (float[][]) ortOutputs.get(0).getValue();
                 state = (float[][][]) ortOutputs.get(1).getValue();
 
-                // Update context for the next frame (save the last 64 samples)
                 for (int i = 0; i < batchSize; i++) {
                     System.arraycopy(xWithContext[i], xWithContext[i].length - contextSize,
                             context[i], 0, contextSize);
@@ -114,7 +101,6 @@ public class SileroVad {
                 lastSr = sr;
                 lastBatchSize = batchSize;
                 
-                // Return the speech probability
                 return output[0][0];
 
             } finally {

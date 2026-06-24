@@ -33,7 +33,7 @@ public class SettingsManager {
     }
 
     public static int getDurationThreshold(Context context) {
-        return getPrefs(context).getInt(KEY_DURATION, 2);
+        return getPrefs(context).getInt(KEY_DURATION, 1); // Lowered to 1s
     }
 
     public static void saveDurationThreshold(Context context, int duration) {
