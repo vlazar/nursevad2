@@ -14,10 +14,12 @@ public class EventRepository {
 
     public void addEvent(LogEvent event) {
         List<LogEvent> current = liveEvents.getValue();
+        List<LogEvent> newList = new ArrayList<>();
         if (current != null) {
-            current.add(event);
-            liveEvents.postValue(current);
+            newList.addAll(current);
         }
+        newList.add(event);
+        liveEvents.postValue(newList);
     }
 
     public void clearEvents() {

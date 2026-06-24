@@ -13,23 +13,26 @@ public class SileroVad {
     private OrtSession session;
     private float[] state = new float[2 * 1 * 128];
     private long sr = 16000;
-    private int chunkSize = 512; // 32ms at 16kHz
+    private int chunkSize = 512; 
 
     public SileroVad(Context context) {
         try {
             env = OrtEnvironment.getEnvironment();
             OrtSession.SessionOptions opts = new OrtSession.SessionOptions();
+            opts.setIntraOpNumThreads(1); // Prevents threading crashes on mobile ARM chips
             String modelPath = copyAssetToCache(context, "silero_vad.onnx");
             session = env.createSession(modelPath, opts);
-        } catch (OrtException e) { e.printStackTrace(); }
+        } catch (OrtException e) { 
+            EventBus.getInstance().postStatus("ERR: ONNX Init failed: " + e.getMessage());
+        }
     }
 
     public float predict(short[] audioChunk) {
+        if (session == null) return 0; // Prevent crash if ONNX failed to load
         try {
             float[] input = new float[chunkSize];
             for(int i=0; i<chunkSize; i++) input[i] = audioChunk[i] / 32768.0f;
             
-            // Wrap primitive arrays in NIO Buffers for ONNX Runtime
             FloatBuffer inputBuffer = FloatBuffer.wrap(input);
             FloatBuffer stateBuffer = FloatBuffer.wrap(state);
             LongBuffer srBuffer = LongBuffer.wrap(new long[]{sr});

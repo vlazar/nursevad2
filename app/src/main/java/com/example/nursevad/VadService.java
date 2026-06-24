@@ -23,14 +23,12 @@ public class VadService extends Service {
     private SileroVad vad;
     private MediaPlayer mediaPlayer;
 
-    // State Machine
     private boolean isSpeaking = false;
     private long speechStartMs = 0;
     private double accumulatedDb = 0;
     private int frameCount = 0;
     private int silenceFrames = 0;
 
-    // File Picker Logic
     private Map<Integer, List<String>> levelFiles = new HashMap<>();
     private Map<Integer, List<String>> queues = new HashMap<>();
     private Map<Integer, String> lastPlayed = new HashMap<>();
@@ -38,10 +36,14 @@ public class VadService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
-        createNotificationChannel();
-        vad = new SileroVad(this);
-        PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
-        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "NurseVAD::Wakelock");
+        try {
+            createNotificationChannel();
+            vad = new SileroVad(this);
+            PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "NurseVAD::Wakelock");
+        } catch (Exception e) {
+            EventBus.getInstance().postStatus("ERR: onCreate failed: " + e.getMessage());
+        }
     }
 
     @Override
@@ -51,26 +53,35 @@ public class VadService extends Service {
                 stopSelf();
                 return START_NOT_STICKY;
             }
-            // Added handling for the Play Button in the Log
             if ("PLAY_SPECIFIC".equals(intent.getAction())) {
                 String uri = intent.getStringExtra("URI");
-                if (uri != null) {
-                    playSpecificFile(uri);
-                }
+                if (uri != null) playSpecificFile(uri);
                 return START_STICKY;
             }
         }
 
-        Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
-                .setContentTitle("Nurse VAD")
-                .setContentText("Listening...")
-                .setSmallIcon(R.drawable.ic_tongue)
-                .build();
-        startForeground(1, notification);
+        try {
+            Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
+                    .setContentTitle("Nurse VAD")
+                    .setContentText("Listening...")
+                    .setSmallIcon(R.drawable.ic_tongue)
+                    .build();
+            
+            // This throws SecurityException on Android 13+ if POST_NOTIFICATIONS is missing
+            startForeground(1, notification);
+        } catch (SecurityException e) {
+            EventBus.getInstance().postStatus("ERR: Notification permission denied! Allow in Settings.");
+            stopSelf();
+            return START_NOT_STICKY;
+        } catch (Exception e) {
+            EventBus.getInstance().postStatus("ERR: Notification failed: " + e.getMessage());
+            stopSelf();
+            return START_NOT_STICKY;
+        }
 
         if (!isRunning) {
             isRunning = true;
-            wakeLock.acquire();
+            if (wakeLock != null) wakeLock.acquire();
             loadAudioFiles();
             startRecording();
             EventRepository.getInstance().addEvent(new LogEvent(LogEvent.Type.START));
@@ -79,26 +90,42 @@ public class VadService extends Service {
     }
 
     private void startRecording() {
-        int bufferSize = AudioRecord.getMinBufferSize(16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
-        audioRecord = new AudioRecord(MediaRecorder.AudioSource.MIC, 16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize);
-        
-        recordingThread = new Thread(() -> {
-            audioRecord.startRecording();
-            short[] buffer = new short[512];
-            while (isRunning) {
-                if (isPaused) {
-                    try { Thread.sleep(100); } catch (InterruptedException e) {}
-                    continue;
-                }
-                audioRecord.read(buffer, 0, buffer.length);
-                processAudio(buffer);
+        try {
+            int bufferSize = AudioRecord.getMinBufferSize(16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
+            if (bufferSize < 0) {
+                EventBus.getInstance().postStatus("ERR: Device doesn't support 16kHz audio.");
+                return;
             }
-        });
-        recordingThread.start();
+            
+            audioRecord = new AudioRecord(MediaRecorder.AudioSource.MIC, 16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize);
+            
+            // If MIC permission is denied, this state check catches it before startRecording() crashes
+            if (audioRecord.getState() != AudioRecord.STATE_INITIALIZED) {
+                EventBus.getInstance().postStatus("ERR: AudioRecord failed. Did you grant MIC permission?");
+                return;
+            }
+            
+            audioRecord.startRecording();
+            recordingThread = new Thread(() -> {
+                short[] buffer = new short[512];
+                while (isRunning) {
+                    if (isPaused) {
+                        try { Thread.sleep(100); } catch (InterruptedException e) {}
+                        continue;
+                    }
+                    int read = audioRecord.read(buffer, 0, 512);
+                    if (read == 512) {
+                        processAudio(buffer);
+                    }
+                }
+            });
+            recordingThread.start();
+        } catch (Exception e) {
+            EventBus.getInstance().postStatus("ERR: startRecording crashed: " + e.getMessage());
+        }
     }
 
     private void processAudio(short[] chunk) {
-        // 1. Calculate Volume
         double sum = 0;
         for (short s : chunk) sum += s * s;
         double rms = Math.sqrt(sum / chunk.length);
@@ -108,10 +135,11 @@ public class VadService extends Service {
         
         EventBus.getInstance().postVolume(percent);
 
-        // 2. VAD Inference
-        float prob = vad.predict(chunk);
+        float prob = 0;
+        if (vad != null) {
+            prob = vad.predict(chunk);
+        }
 
-        // 3. State Machine
         if (prob > 0.5 && !isSpeaking) {
             isSpeaking = true;
             speechStartMs = SystemClock.elapsedRealtime();
@@ -125,7 +153,7 @@ public class VadService extends Service {
             if (prob < 0.35) silenceFrames++;
             else silenceFrames = 0;
 
-            if (silenceFrames > 15) { // Speech ended
+            if (silenceFrames > 15) { 
                 isSpeaking = false;
                 long durationMs = SystemClock.elapsedRealtime() - speechStartMs;
                 int thresholdSec = SettingsManager.getDurationThreshold(this);

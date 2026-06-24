@@ -3,6 +3,7 @@ package com.example.nursevad;
 import android.Manifest;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.view.Menu;
 import android.view.MenuItem;
@@ -28,8 +29,16 @@ public class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
+        // Request Microphone Permission
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.RECORD_AUDIO}, 101);
+        }
+
+        // Request Notification Permission (Required for Android 13+ Foreground Services)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.POST_NOTIFICATIONS}, 102);
+            }
         }
 
         statusText = findViewById(R.id.statusText);
@@ -39,8 +48,6 @@ public class MainActivity extends AppCompatActivity {
         RecyclerView recyclerView = findViewById(R.id.recyclerView);
 
         recyclerView.setLayoutManager(new LinearLayoutManager(this));
-        
-        // Fixed constructor call (removed 'this')
         adapter = new LogAdapter(uri -> {
             Intent i = new Intent(this, VadService.class);
             i.setAction("PLAY_SPECIFIC");
@@ -68,7 +75,15 @@ public class MainActivity extends AppCompatActivity {
 
         btnClear.setOnClickListener(v -> EventRepository.getInstance().clearEvents());
         
-        EventBus.getInstance().getStatus().observe(this, status -> statusText.setText(status));
+        EventBus.getInstance().getStatus().observe(this, status -> {
+            statusText.setText(status);
+            // Visual indicator for errors
+            if (status != null && status.startsWith("ERR:")) {
+                statusText.setTextColor(getResources().getColor(android.R.color.holo_red_dark));
+            } else {
+                statusText.setTextColor(getResources().getColor(android.R.color.black));
+            }
+        });
         EventBus.getInstance().getVolume().observe(this, vol -> volumeMeter.setProgress(vol));
     }
 
