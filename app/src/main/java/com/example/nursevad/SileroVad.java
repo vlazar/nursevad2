@@ -3,6 +3,8 @@ package com.example.nursevad;
 import android.content.Context;
 import ai.onnxruntime.*;
 import java.io.*;
+import java.nio.FloatBuffer;
+import java.nio.LongBuffer;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -27,9 +29,14 @@ public class SileroVad {
             float[] input = new float[chunkSize];
             for(int i=0; i<chunkSize; i++) input[i] = audioChunk[i] / 32768.0f;
             
-            OnnxTensor inputTensor = OnnxTensor.createTensor(env, input, new long[]{1, chunkSize});
-            OnnxTensor stateTensor = OnnxTensor.createTensor(env, state, new long[]{2, 1, 128});
-            OnnxTensor srTensor = OnnxTensor.createTensor(env, new long[]{sr});
+            // Wrap primitive arrays in NIO Buffers for ONNX Runtime
+            FloatBuffer inputBuffer = FloatBuffer.wrap(input);
+            FloatBuffer stateBuffer = FloatBuffer.wrap(state);
+            LongBuffer srBuffer = LongBuffer.wrap(new long[]{sr});
+
+            OnnxTensor inputTensor = OnnxTensor.createTensor(env, inputBuffer, new long[]{1, chunkSize});
+            OnnxTensor stateTensor = OnnxTensor.createTensor(env, stateBuffer, new long[]{2, 1, 128});
+            OnnxTensor srTensor = OnnxTensor.createTensor(env, srBuffer, new long[]{1});
 
             Map<String, OnnxTensor> inputs = new HashMap<>();
             inputs.put("input", inputTensor);

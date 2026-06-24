@@ -8,7 +8,6 @@ import android.media.MediaPlayer;
 import android.media.MediaRecorder;
 import android.net.Uri;
 import android.os.*;
-import android.util.Log;
 import androidx.core.app.NotificationCompat;
 import androidx.documentfile.provider.DocumentFile;
 import java.io.IOException;
@@ -47,9 +46,19 @@ public class VadService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent != null && "STOP".equals(intent.getAction())) {
-            stopSelf();
-            return START_NOT_STICKY;
+        if (intent != null) {
+            if ("STOP".equals(intent.getAction())) {
+                stopSelf();
+                return START_NOT_STICKY;
+            }
+            // Added handling for the Play Button in the Log
+            if ("PLAY_SPECIFIC".equals(intent.getAction())) {
+                String uri = intent.getStringExtra("URI");
+                if (uri != null) {
+                    playSpecificFile(uri);
+                }
+                return START_STICKY;
+            }
         }
 
         Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
@@ -156,7 +165,7 @@ public class VadService extends Service {
             mediaPlayer.prepare();
             mediaPlayer.setOnCompletionListener(mp -> {
                 isPaused = false;
-                EventBus.getInstance().postStatus("Idle");
+                EventBus.getInstance().postStatus("Listening...");
             });
             mediaPlayer.start();
         } catch (IOException e) {

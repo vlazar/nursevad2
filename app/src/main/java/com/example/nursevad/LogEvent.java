@@ -1,4 +1,7 @@
 package com.example.nursevad;
+
+import android.net.Uri;
+
 public class LogEvent {
     public enum Type { SPEECH, START, STOP }
     public Type type;
