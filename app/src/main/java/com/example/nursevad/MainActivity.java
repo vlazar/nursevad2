@@ -17,6 +17,9 @@ import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
+import java.io.File;
+import java.io.PrintWriter;
+import java.util.Date;
 
 public class MainActivity extends AppCompatActivity {
     private boolean isListening = false;
@@ -27,14 +30,31 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        
+        // --- GLOBAL CRASH LOGGER ---
+        final Thread.UncaughtExceptionHandler defaultHandler = Thread.getDefaultUncaughtExceptionHandler();
+        Thread.setDefaultUncaughtExceptionHandler((t, e) -> {
+            try {
+                File logDir = getExternalFilesDir(null);
+                if (logDir != null) {
+                    File logFile = new File(logDir, "crash_log.txt");
+                    PrintWriter writer = new PrintWriter(logFile);
+                    writer.println("Time: " + new Date().toString());
+                    e.printStackTrace(writer);
+                    writer.close();
+                }
+            } catch (Exception ex) { /* Ignore */ }
+            if (defaultHandler != null) defaultHandler.uncaughtException(t, e);
+            else System.exit(1);
+        });
+        // ---------------------------
+
         setContentView(R.layout.activity_main);
 
-        // Request Microphone Permission
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.RECORD_AUDIO}, 101);
         }
 
-        // Request Notification Permission (Required for Android 13+ Foreground Services)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                 ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.POST_NOTIFICATIONS}, 102);
@@ -77,7 +97,6 @@ public class MainActivity extends AppCompatActivity {
         
         EventBus.getInstance().getStatus().observe(this, status -> {
             statusText.setText(status);
-            // Visual indicator for errors
             if (status != null && status.startsWith("ERR:")) {
                 statusText.setTextColor(getResources().getColor(android.R.color.holo_red_dark));
             } else {

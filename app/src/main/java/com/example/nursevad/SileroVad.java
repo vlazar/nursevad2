@@ -19,16 +19,20 @@ public class SileroVad {
         try {
             env = OrtEnvironment.getEnvironment();
             OrtSession.SessionOptions opts = new OrtSession.SessionOptions();
-            opts.setIntraOpNumThreads(1); // Prevents threading crashes on mobile ARM chips
+            opts.setIntraOpNumThreads(1); 
             String modelPath = copyAssetToCache(context, "silero_vad.onnx");
+            if (modelPath == null) {
+                EventBus.getInstance().postStatus("ERR: Model file missing or corrupt.");
+                return;
+            }
             session = env.createSession(modelPath, opts);
-        } catch (OrtException e) { 
+        } catch (Throwable e) { 
             EventBus.getInstance().postStatus("ERR: ONNX Init failed: " + e.getMessage());
         }
     }
 
     public float predict(short[] audioChunk) {
-        if (session == null) return 0; // Prevent crash if ONNX failed to load
+        if (session == null) return 0; 
         try {
             float[] input = new float[chunkSize];
             for(int i=0; i<chunkSize; i++) input[i] = audioChunk[i] / 32768.0f;
@@ -63,8 +67,20 @@ public class SileroVad {
                  OutputStream out = new FileOutputStream(cacheFile)) {
                 byte[] buffer = new byte[4096];
                 int read;
-                while ((read = in.read(buffer)) != -1) out.write(buffer, 0, read);
-            } catch (IOException e) { e.printStackTrace(); }
+                long totalBytes = 0;
+                while ((read = in.read(buffer)) != -1) {
+                    out.write(buffer, 0, read);
+                    totalBytes += read;
+                }
+                // The real model is ~2.2MB. If it's <100KB, it's likely an HTML error page.
+                if (totalBytes < 100000) {
+                    EventBus.getInstance().postStatus("ERR: Model file is too small. Download the RAW .onnx file!");
+                    return null;
+                }
+            } catch (IOException e) { 
+                EventBus.getInstance().postStatus("ERR: Asset copy failed: " + e.getMessage());
+                return null;
+            }
         }
         return cacheFile.getAbsolutePath();
     }

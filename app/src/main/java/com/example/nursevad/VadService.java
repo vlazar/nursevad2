@@ -10,7 +10,9 @@ import android.net.Uri;
 import android.os.*;
 import androidx.core.app.NotificationCompat;
 import androidx.documentfile.provider.DocumentFile;
+import java.io.File;
 import java.io.IOException;
+import java.io.PrintWriter;
 import java.util.*;
 
 public class VadService extends Service {
@@ -36,18 +38,47 @@ public class VadService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
-        try {
-            createNotificationChannel();
-            vad = new SileroVad(this);
-            PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
-            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "NurseVAD::Wakelock");
-        } catch (Exception e) {
-            EventBus.getInstance().postStatus("ERR: onCreate failed: " + e.getMessage());
-        }
+        
+        // Crash logger for Service
+        final Thread.UncaughtExceptionHandler defaultHandler = Thread.getDefaultUncaughtExceptionHandler();
+        Thread.setDefaultUncaughtExceptionHandler((t, e) -> {
+            try {
+                File logDir = getExternalFilesDir(null);
+                if (logDir != null) {
+                    File logFile = new File(logDir, "crash_log.txt");
+                    PrintWriter writer = new PrintWriter(logFile);
+                    writer.println("Time: " + new Date().toString() + " [SERVICE CRASH]");
+                    e.printStackTrace(writer);
+                    writer.close();
+                }
+            } catch (Exception ex) {}
+            if (defaultHandler != null) defaultHandler.uncaughtException(t, e);
+            else System.exit(1);
+        });
+
+        PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "NurseVAD::Wakelock");
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        // 1. IMMEDIATELY start foreground to prevent RemoteServiceException
+        createNotificationChannel();
+        Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle("Nurse VAD")
+                .setContentText("Initializing...")
+                .setSmallIcon(android.R.drawable.ic_btn_speak_now) // Guaranteed system icon
+                .build();
+        
+        try {
+            startForeground(1, notification);
+        } catch (Exception e) {
+            EventBus.getInstance().postStatus("ERR: Foreground failed: " + e.getMessage());
+            stopSelf();
+            return START_NOT_STICKY;
+        }
+
+        // 2. Handle Intents
         if (intent != null) {
             if ("STOP".equals(intent.getAction())) {
                 stopSelf();
@@ -60,28 +91,19 @@ public class VadService extends Service {
             }
         }
 
-        try {
-            Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
-                    .setContentTitle("Nurse VAD")
-                    .setContentText("Listening...")
-                    .setSmallIcon(R.drawable.ic_tongue)
-                    .build();
-            
-            // This throws SecurityException on Android 13+ if POST_NOTIFICATIONS is missing
-            startForeground(1, notification);
-        } catch (SecurityException e) {
-            EventBus.getInstance().postStatus("ERR: Notification permission denied! Allow in Settings.");
-            stopSelf();
-            return START_NOT_STICKY;
-        } catch (Exception e) {
-            EventBus.getInstance().postStatus("ERR: Notification failed: " + e.getMessage());
-            stopSelf();
-            return START_NOT_STICKY;
-        }
-
+        // 3. Heavy Initialization
         if (!isRunning) {
             isRunning = true;
-            if (wakeLock != null) wakeLock.acquire();
+            if (wakeLock != null && !wakeLock.isHeld()) wakeLock.acquire();
+            
+            if (vad == null) {
+                try {
+                    vad = new SileroVad(this);
+                } catch (Throwable t) {
+                    EventBus.getInstance().postStatus("ERR: VAD Init crashed: " + t.getMessage());
+                }
+            }
+            
             loadAudioFiles();
             startRecording();
             EventRepository.getInstance().addEvent(new LogEvent(LogEvent.Type.START));
@@ -99,9 +121,8 @@ public class VadService extends Service {
             
             audioRecord = new AudioRecord(MediaRecorder.AudioSource.MIC, 16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize);
             
-            // If MIC permission is denied, this state check catches it before startRecording() crashes
             if (audioRecord.getState() != AudioRecord.STATE_INITIALIZED) {
-                EventBus.getInstance().postStatus("ERR: AudioRecord failed. Did you grant MIC permission?");
+                EventBus.getInstance().postStatus("ERR: AudioRecord failed. Grant MIC permission?");
                 return;
             }
             
@@ -136,9 +157,7 @@ public class VadService extends Service {
         EventBus.getInstance().postVolume(percent);
 
         float prob = 0;
-        if (vad != null) {
-            prob = vad.predict(chunk);
-        }
+        if (vad != null) prob = vad.predict(chunk);
 
         if (prob > 0.5 && !isSpeaking) {
             isSpeaking = true;
