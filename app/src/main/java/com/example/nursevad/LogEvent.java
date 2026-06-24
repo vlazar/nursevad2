@@ -20,8 +20,17 @@ public class LogEvent {
         this.type = type;
         this.level = level;
         this.timestamp = System.currentTimeMillis();
-        this.uriString = uriString;
-        this.rawFileName = Uri.parse(uriString).getLastPathSegment();
-        this.displayName = rawFileName.replaceAll("\\.[^.]+$", "").replace("_", "").replace("-", "");
+        this.uriString = (uriString != null && !uriString.isEmpty()) ? uriString : null;
+        
+        if (this.uriString != null) {
+            this.rawFileName = Uri.parse(this.uriString).getLastPathSegment();
+            // Remove extension, underscores, and hyphens as requested
+            this.displayName = rawFileName.replaceAll("\\.[^.]+$", "")
+                                          .replace("_", "")
+                                          .replace("-", "");
+        } else {
+            this.rawFileName = "";
+            this.displayName = "No audio file configured";
+        }
     }
 }
