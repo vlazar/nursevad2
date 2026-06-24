@@ -21,11 +21,12 @@ jobs:
           distribution: 'temurin'
           cache: gradle
 
-      # This official action installs Gradle and adds it to the PATH
+      # Explicitly set Gradle version to match AGP 8.5.0
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: "8.7"
 
-      # Run 'gradle' directly instead of './gradlew'
       - name: Build with Gradle
         run: gradle assembleDebug
 
