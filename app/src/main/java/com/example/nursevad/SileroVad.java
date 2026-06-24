@@ -11,7 +11,7 @@ import java.util.Map;
 public class SileroVad {
     private OrtEnvironment env;
     private OrtSession session;
-    private float[] state = new float[2 * 1 * 128];
+    private float[] state = new float[2 * 1 * 128]; // 256 elements total
     private long sr = 16000;
     private int chunkSize = 512; 
 
@@ -51,13 +51,31 @@ public class SileroVad {
             inputs.put("sr", srTensor);
 
             OrtSession.Result result = session.run(inputs);
+            
+            // 1. Extract probability
             float prob = ((float[][]) result.get("output").get().getValue())[0][0];
-            float[] newState = ((float[][][]) result.get("stateN").get().getValue())[0][0];
-            System.arraycopy(newState, 0, state, 0, state.length);
+            
+            // 2. Extract and copy new state safely
+            float[][][] newState = (float[][][]) result.get("stateN").get().getValue();
+            int idx = 0;
+            for (int i = 0; i < newState.length; i++) {
+                for (int j = 0; j < newState[i].length; j++) {
+                    // Safely copies [2][1][128] back into the flat 256-element array
+                    System.arraycopy(newState[i][j], 0, state, idx, newState[i][j].length);
+                    idx += newState[i][j].length;
+                }
+            }
 
-            inputTensor.close(); stateTensor.close(); srTensor.close(); result.close();
+            inputTensor.close(); 
+            stateTensor.close(); 
+            srTensor.close(); 
+            result.close();
+            
             return prob;
-        } catch (OrtException e) { return 0; }
+        } catch (Throwable e) { 
+            EventBus.getInstance().postStatus("ERR: VAD Predict failed: " + e.getMessage());
+            return 0; 
+        }
     }
 
     private String copyAssetToCache(Context context, String filename) {
@@ -72,7 +90,6 @@ public class SileroVad {
                     out.write(buffer, 0, read);
                     totalBytes += read;
                 }
-                // The real model is ~2.2MB. If it's <100KB, it's likely an HTML error page.
                 if (totalBytes < 100000) {
                     EventBus.getInstance().postStatus("ERR: Model file is too small. Download the RAW .onnx file!");
                     return null;
