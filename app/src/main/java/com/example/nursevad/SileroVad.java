@@ -3,78 +3,129 @@ package com.example.nursevad;
 import android.content.Context;
 import ai.onnxruntime.*;
 import java.io.*;
-import java.nio.FloatBuffer;
-import java.nio.LongBuffer;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 public class SileroVad {
     private OrtEnvironment env;
     private OrtSession session;
-    private float[] state = new float[2 * 1 * 128]; // 256 elements total
-    private long sr = 16000;
-    private int chunkSize = 512; 
+    
+    // Model state and context for streaming inference
+    private float[][][] state;
+    private float[][] context;
+    private int lastSr = 0;
+    private int lastBatchSize = 0;
+    
+    private static final List<Integer> SAMPLE_RATES = Arrays.asList(8000, 16000);
 
     public SileroVad(Context context) {
         try {
             env = OrtEnvironment.getEnvironment();
             OrtSession.SessionOptions opts = new OrtSession.SessionOptions();
-            opts.setIntraOpNumThreads(1); 
+            opts.setInterOpNumThreads(1);
+            opts.setIntraOpNumThreads(1);
+            opts.addCPU(true);
+            
             String modelPath = copyAssetToCache(context, "silero_vad.onnx");
             if (modelPath == null) {
                 EventBus.getInstance().postStatus("ERR: Model file missing or corrupt.");
                 return;
             }
             session = env.createSession(modelPath, opts);
+            resetStates();
         } catch (Throwable e) { 
             EventBus.getInstance().postStatus("ERR: ONNX Init failed: " + e.getMessage());
         }
     }
 
+    void resetStates() {
+        state = new float[2][1][128];
+        context = new float[0][];
+        lastSr = 0;
+        lastBatchSize = 0;
+    }
+
     public float predict(short[] audioChunk) {
         if (session == null) return 0; 
+        
+        int sr = 16000;
+        // Convert short[] to float[][] for ONNX
+        float[][] x = new float[1][audioChunk.length];
+        for (int i = 0; i < audioChunk.length; i++) {
+            x[0][i] = audioChunk[i] / 32768.0f;
+        }
+
         try {
-            float[] input = new float[chunkSize];
-            for(int i=0; i<chunkSize; i++) input[i] = audioChunk[i] / 32768.0f;
-            
-            FloatBuffer inputBuffer = FloatBuffer.wrap(input);
-            FloatBuffer stateBuffer = FloatBuffer.wrap(state);
-            LongBuffer srBuffer = LongBuffer.wrap(new long[]{sr});
+            int batchSize = x.length;
+            int numSamples = sr == 16000 ? 512 : 256;
+            int contextSize = sr == 16000 ? 64 : 32;
 
-            OnnxTensor inputTensor = OnnxTensor.createTensor(env, inputBuffer, new long[]{1, chunkSize});
-            OnnxTensor stateTensor = OnnxTensor.createTensor(env, stateBuffer, new long[]{2, 1, 128});
-            OnnxTensor srTensor = OnnxTensor.createTensor(env, srBuffer, new long[]{1});
-
-            Map<String, OnnxTensor> inputs = new HashMap<>();
-            inputs.put("input", inputTensor);
-            inputs.put("state", stateTensor);
-            inputs.put("sr", srTensor);
-
-            OrtSession.Result result = session.run(inputs);
-            
-            // 1. Extract probability
-            float prob = ((float[][]) result.get("output").get().getValue())[0][0];
-            
-            // 2. Extract and copy new state safely
-            float[][][] newState = (float[][][]) result.get("stateN").get().getValue();
-            int idx = 0;
-            for (int i = 0; i < newState.length; i++) {
-                for (int j = 0; j < newState[i].length; j++) {
-                    // Safely copies [2][1][128] back into the flat 256-element array
-                    System.arraycopy(newState[i][j], 0, state, idx, newState[i][j].length);
-                    idx += newState[i][j].length;
-                }
+            // Reset states if sample rate or batch size changes
+            if (lastSr != 0 && lastSr != sr) {
+                resetStates();
+            } else if (lastBatchSize != 0 && lastBatchSize != batchSize) {
+                resetStates();
+            } else if (lastBatchSize == 0) {
+                lastBatchSize = batchSize;
             }
 
-            inputTensor.close(); 
-            stateTensor.close(); 
-            srTensor.close(); 
-            result.close();
-            
-            return prob;
-        } catch (Throwable e) { 
+            // Initialize context if empty
+            if (context.length == 0) {
+                context = new float[batchSize][contextSize];
+            }
+
+            // CRITICAL: Prepend context (64 samples) to current chunk (512 samples)
+            float[][] xWithContext = new float[batchSize][contextSize + numSamples];
+            for (int i = 0; i < batchSize; i++) {
+                System.arraycopy(context[i], 0, xWithContext[i], 0, contextSize);
+                System.arraycopy(x[i], 0, xWithContext[i], contextSize, numSamples);
+            }
+
+            OnnxTensor inputTensor = null;
+            OnnxTensor stateTensor = null;
+            OnnxTensor srTensor = null;
+            OrtSession.Result ortOutputs = null;
+
+            try {
+                // Create tensors directly from multi-dimensional arrays
+                inputTensor = OnnxTensor.createTensor(env, xWithContext);
+                stateTensor = OnnxTensor.createTensor(env, state);
+                srTensor = OnnxTensor.createTensor(env, new long[]{sr});
+
+                Map<String, OnnxTensor> inputs = new HashMap<>();
+                inputs.put("input", inputTensor);
+                inputs.put("sr", srTensor);
+                inputs.put("state", stateTensor);
+
+                ortOutputs = session.run(inputs);
+                
+                // Extract outputs
+                float[][] output = (float[][]) ortOutputs.get(0).getValue();
+                state = (float[][][]) ortOutputs.get(1).getValue();
+
+                // Update context for the next frame (save the last 64 samples)
+                for (int i = 0; i < batchSize; i++) {
+                    System.arraycopy(xWithContext[i], xWithContext[i].length - contextSize,
+                            context[i], 0, contextSize);
+                }
+
+                lastSr = sr;
+                lastBatchSize = batchSize;
+                
+                // Return the speech probability
+                return output[0][0];
+
+            } finally {
+                if (inputTensor != null) inputTensor.close();
+                if (stateTensor != null) stateTensor.close();
+                if (srTensor != null) srTensor.close();
+                if (ortOutputs != null) ortOutputs.close();
+            }
+        } catch (Throwable e) {
             EventBus.getInstance().postStatus("ERR: VAD Predict failed: " + e.getMessage());
-            return 0; 
+            return 0;
         }
     }
 
