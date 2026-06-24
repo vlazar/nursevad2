@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:padding="16dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Loudness Thresholds"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:layout_marginBottom="8dp" />
+
+        <!-- Level 1 -->
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginTop="12dp">
+            <TextView android:id="@+id/tvThreshold1" android:layout_width="48dp" android:layout_height="wrap_content" android:text="20%" />
+            <SeekBar android:id="@+id/sbThreshold1" android:layout_width="match_parent" android:layout_height="wrap_content" />
+        </LinearLayout>
+        <!-- Level 2 -->
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginTop="12dp">
+            <TextView android:id="@+id/tvThreshold2" android:layout_width="48dp" android:layout_height="wrap_content" android:text="40%" />
+            <SeekBar android:id="@+id/sbThreshold2" android:layout_width="match_parent" android:layout_height="wrap_content" />
+        </LinearLayout>
+        <!-- Level 3 -->
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginTop="12dp">
+            <TextView android:id="@+id/tvThreshold3" android:layout_width="48dp" android:layout_height="wrap_content" android:text="60%" />
+            <SeekBar android:id="@+id/sbThreshold3" android:layout_width="match_parent" android:layout_height="wrap_content" />
+        </LinearLayout>
+        <!-- Level 4 -->
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginTop="12dp">
+            <TextView android:id="@+id/tvThreshold4" android:layout_width="48dp" android:layout_height="wrap_content" android:text="80%" />
+            <SeekBar android:id="@+id/sbThreshold4" android:layout_width="match_parent" android:layout_height="wrap_content" />
+        </LinearLayout>
+        <!-- Level 5 -->
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginTop="12dp">
+            <TextView android:id="@+id/tvThreshold5" android:layout_width="48dp" android:layout_height="wrap_content" android:text="100%" />
+            <SeekBar android:id="@+id/sbThreshold5" android:layout_width="match_parent" android:layout_height="wrap_content" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Ignore Short Speech"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:layout_marginTop="24dp"
+            android:layout_marginBottom="8dp" />
+
+        <TextView
+            android:id="@+id/tvDuration"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="shorter than 2 seconds"
+            android:layout_marginBottom="8dp" />
+
+        <SeekBar
+            android:id="@+id/sbDuration"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Audio Files Folder"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:layout_marginTop="24dp"
+            android:layout_marginBottom="8dp" />
+            
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Select a folder containing Level 1, ..., Level 5 subfolders"
+            android:textSize="14sp" />
+
+        <TextView
+            android:id="@+id/tvFolderName"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="No folder selected"
+            android:textStyle="italic"
+            android:layout_marginTop="8dp"
+            android:layout_marginBottom="8dp" />
+
+        <Button
+            android:id="@+id/btnSelectFolder"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Select Folder" />
+
+        <Button
+            android:id="@+id/btnSave"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Save Settings"
+            android:layout_marginTop="32dp" />
+    </LinearLayout>
+</ScrollView>
