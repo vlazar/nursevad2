@@ -92,10 +92,11 @@ public class LogAdapter extends ListAdapter<LogEvent, LogAdapter.ViewHolder> {
                 
                 btnPlay.setVisibility(View.VISIBLE);
                 btnPlay.setOnClickListener(v -> {
-                    if (listener != null && event.uriString != null) {
-                        listener.onPlayClick(event.uriString);
+                    // Play the RECORDED speech, not the response audio
+                    if (listener != null && event.recordedSpeechUri != null) {
+                        listener.onPlayClick(event.recordedSpeechUri);
                     } else {
-                        EventBus.getInstance().postDebug("Play clicked, but no audio file was assigned to this event.");
+                        EventBus.getInstance().postDebug("Play clicked, but no recorded speech found.");
                     }
                 });
 

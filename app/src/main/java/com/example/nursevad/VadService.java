@@ -11,8 +11,10 @@ import android.os.*;
 import androidx.core.app.NotificationCompat;
 import androidx.documentfile.provider.DocumentFile;
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.PrintWriter;
+import java.io.RandomAccessFile;
 import java.util.*;
 
 public class VadService extends Service {
@@ -31,8 +33,12 @@ public class VadService extends Service {
     private int frameCount = 0;
     private int silenceFrames = 0;
 
-    private Map<Integer, List<String>> levelFiles = new HashMap<>();
-    private Map<Integer, List<String>> queues = new HashMap<>();
+    // Recording variables
+    private FileOutputStream fos;
+    private File recordedFile;
+
+    private Map<Integer, List<AudioFile>> levelFiles = new HashMap<>();
+    private Map<Integer, List<AudioFile>> queues = new HashMap<>();
     private Map<Integer, String> lastPlayed = new HashMap<>();
 
     @Override
@@ -92,11 +98,7 @@ public class VadService extends Service {
             if (wakeLock != null && !wakeLock.isHeld()) wakeLock.acquire();
             
             if (vad == null) {
-                try {
-                    vad = new SileroVad(this);
-                } catch (Throwable t) {
-                    EventBus.getInstance().postStatus("ERR: VAD Init crashed: " + t.getMessage());
-                }
+                try { vad = new SileroVad(this); } catch (Throwable t) {}
             }
             
             loadAudioFiles();
@@ -110,17 +112,10 @@ public class VadService extends Service {
     private void startRecording() {
         try {
             int bufferSize = AudioRecord.getMinBufferSize(16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
-            if (bufferSize < 0) {
-                EventBus.getInstance().postStatus("ERR: Device doesn't support 16kHz audio.");
-                return;
-            }
+            if (bufferSize < 0) return;
             
             audioRecord = new AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, 16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize);
-            
-            if (audioRecord.getState() != AudioRecord.STATE_INITIALIZED) {
-                EventBus.getInstance().postStatus("ERR: AudioRecord failed. Grant MIC permission?");
-                return;
-            }
+            if (audioRecord.getState() != AudioRecord.STATE_INITIALIZED) return;
             
             audioRecord.startRecording();
             recordingThread = new Thread(() -> {
@@ -131,15 +126,11 @@ public class VadService extends Service {
                         continue;
                     }
                     int read = audioRecord.read(buffer, 0, 512);
-                    if (read == 512) {
-                        processAudio(buffer);
-                    }
+                    if (read == 512) processAudio(buffer);
                 }
             });
             recordingThread.start();
-        } catch (Exception e) {
-            EventBus.getInstance().postStatus("ERR: startRecording crashed: " + e.getMessage());
-        }
+        } catch (Exception e) {}
     }
 
     private void processAudio(short[] chunk) {
@@ -161,9 +152,28 @@ public class VadService extends Service {
             isSpeaking = true;
             speechStartMs = SystemClock.elapsedRealtime();
             accumulatedDb = 0; frameCount = 0; silenceFrames = 0;
+            
+            // START RECORDING SPEECH TO FILE
+            try {
+                recordedFile = new File(getCacheDir(), "speech_" + speechStartMs + ".wav");
+                fos = new FileOutputStream(recordedFile);
+                writeWavHeader(fos, 16000, 1, 16);
+            } catch (Exception e) {
+                EventBus.getInstance().postDebug("ERR: Record start failed");
+            }
         }
 
         if (isSpeaking) {
+            // WRITE AUDIO CHUNK TO FILE
+            if (fos != null) {
+                byte[] byteBuffer = new byte[chunk.length * 2];
+                for (int i = 0; i < chunk.length; i++) {
+                    byteBuffer[i * 2] = (byte) (chunk[i] & 0xff);
+                    byteBuffer[i * 2 + 1] = (byte) ((chunk[i] >> 8) & 0xff);
+                }
+                try { fos.write(byteBuffer); } catch (IOException e) {}
+            }
+
             accumulatedDb += db;
             frameCount++;
             if (prob < 0.4) silenceFrames++;
@@ -171,6 +181,16 @@ public class VadService extends Service {
 
             if (silenceFrames > 15) { 
                 isSpeaking = false;
+                
+                // STOP RECORDING AND FINALIZE WAV
+                if (fos != null) {
+                    try {
+                        fos.close();
+                        updateWavHeader(recordedFile);
+                    } catch (IOException e) {}
+                    fos = null;
+                }
+                
                 long durationMs = SystemClock.elapsedRealtime() - speechStartMs;
                 int thresholdSec = SettingsManager.getDurationThreshold(this);
                 
@@ -180,8 +200,10 @@ public class VadService extends Service {
                     avgPercent = Math.max(0, Math.min(100, avgPercent));
                     int level = getLevel(avgPercent);
                     
-                    String file = pickFile(level);
-                    LogEvent event = new LogEvent(LogEvent.Type.SPEECH, level, file);
+                    AudioFile file = pickFile(level);
+                    String recordedUri = (recordedFile != null) ? Uri.fromFile(recordedFile).toString() : null;
+                    
+                    LogEvent event = new LogEvent(LogEvent.Type.SPEECH, level, file, recordedUri);
                     EventRepository.getInstance().addEvent(event);
                     
                     if (file != null) {
@@ -203,17 +225,15 @@ public class VadService extends Service {
         return 5;
     }
 
-    private void triggerPlay(String file) {
+    private void triggerPlay(AudioFile file) {
         if (file == null) return;
-
         isPaused = true;
-        String fileName = Uri.parse(file).getLastPathSegment();
-        EventBus.getInstance().postStatus("Playing: " + fileName);
+        EventBus.getInstance().postStatus("Playing: " + file.displayName); // Clean Name
         
         try {
             if (mediaPlayer != null) mediaPlayer.release();
             mediaPlayer = new MediaPlayer();
-            mediaPlayer.setDataSource(this, Uri.parse(file));
+            mediaPlayer.setDataSource(this, Uri.parse(file.uri));
             mediaPlayer.prepare();
             mediaPlayer.setOnCompletionListener(mp -> {
                 isPaused = false;
@@ -231,74 +251,69 @@ public class VadService extends Service {
         try {
             if (mediaPlayer != null) mediaPlayer.release();
             mediaPlayer = new MediaPlayer();
-            mediaPlayer.setDataSource(this, Uri.parse(uriString));
+            
+            Uri uri = Uri.parse(uriString);
+            // Handle local file:// URIs securely
+            if ("file".equals(uri.getScheme())) {
+                mediaPlayer.setDataSource(uri.getPath());
+            } else {
+                mediaPlayer.setDataSource(this, uri);
+            }
+            
             mediaPlayer.prepare();
             mediaPlayer.setOnCompletionListener(mp -> {
                 isPaused = false;
-                EventBus.getInstance().postStatus("Listening...");
+                if (isRunning) EventBus.getInstance().postStatus("Listening...");
             });
             mediaPlayer.start();
-            String name = Uri.parse(uriString).getLastPathSegment();
-            EventBus.getInstance().postStatus("Playing: " + name);
+            EventBus.getInstance().postStatus("Playing recorded speech");
         } catch (Exception e) { 
             isPaused = false; 
             EventBus.getInstance().postDebug("Playback error: " + e.getMessage());
         }
     }
 
-    private String pickFile(int level) {
-        List<String> available = levelFiles.get(level);
+    private AudioFile pickFile(int level) {
+        List<AudioFile> available = levelFiles.get(level);
         if (available == null || available.isEmpty()) return null;
 
-        List<String> queue = queues.get(level);
+        List<AudioFile> queue = queues.get(level);
         if (queue == null || queue.isEmpty()) {
             queue = new ArrayList<>(available);
             Collections.shuffle(queue);
             String last = lastPlayed.get(level);
-            if (last != null && queue.size() > 1 && queue.get(0).equals(last)) {
+            if (last != null && queue.size() > 1 && queue.get(0).uri.equals(last)) {
                 Collections.swap(queue, 0, 1);
             }
             queues.put(level, queue);
         }
-        String picked = queue.remove(0);
-        lastPlayed.put(level, picked);
+        AudioFile picked = queue.remove(0);
+        lastPlayed.put(level, picked.uri);
         return picked;
     }
 
     private void loadAudioFiles() {
         String uriStr = SettingsManager.getFolderUri(this);
-        if (uriStr == null) {
-            EventBus.getInstance().postDebug("No folder selected in settings.");
-            return;
-        }
+        if (uriStr == null) return;
         DocumentFile root = DocumentFile.fromTreeUri(this, Uri.parse(uriStr));
-        if (root == null) {
-            EventBus.getInstance().postDebug("Cannot access selected folder.");
-            return;
-        }
+        if (root == null) return;
 
         StringBuilder debugMsg = new StringBuilder();
         DocumentFile[] rootFiles = root.listFiles();
         if (rootFiles == null) rootFiles = new DocumentFile[0];
 
         for (int i = 1; i <= 5; i++) {
-            List<String> levelFilesList = new ArrayList<>();
+            List<AudioFile> levelFilesList = new ArrayList<>();
             DocumentFile levelDir = null;
 
-            // 1. Try exact match "Level X"
             levelDir = root.findFile("Level " + i);
-            
-            // 2. Fallback: search for any directory containing the number (handles "Level_1", "level1", etc.)
             if (levelDir == null || !levelDir.isDirectory()) {
                 for (DocumentFile f : rootFiles) {
                     if (f.isDirectory() && f.getName() != null && f.getName().contains(String.valueOf(i))) {
-                        levelDir = f;
-                        break;
+                        levelDir = f; break;
                     }
                 }
             }
-
-            // 3. Edge case: User selected the "Level X" folder directly instead of parent
             if ((levelDir == null || !levelDir.isDirectory()) && root.getName() != null && root.getName().contains(String.valueOf(i))) {
                 levelDir = root;
             }
@@ -308,7 +323,10 @@ public class VadService extends Service {
                 if (audioFiles != null) {
                     for (DocumentFile f : audioFiles) {
                         if (f != null && f.getName() != null && !f.getName().startsWith(".") && f.isFile()) {
-                            levelFilesList.add(f.getUri().toString());
+                            // Clean the file name: remove extension, underscores, dashes
+                            String name = f.getName(); 
+                            String cleanName = name.replaceAll("\\.[^.]+$", "").replace("_", "").replace("-", "");
+                            levelFilesList.add(new AudioFile(f.getUri().toString(), cleanName));
                         }
                     }
                 }
@@ -319,9 +337,45 @@ public class VadService extends Service {
         EventBus.getInstance().postDebug("Files found -> " + debugMsg.toString());
     }
 
+    // --- WAV HEADER UTILITIES ---
+    private void writeWavHeader(FileOutputStream out, int sampleRate, int channels, int bitsPerSample) throws IOException {
+        byte[] header = new byte[44];
+        header[0] = 'R'; header[1] = 'I'; header[2] = 'F'; header[3] = 'F';
+        header[8] = 'W'; header[9] = 'A'; header[10] = 'V'; header[11] = 'E';
+        header[12] = 'f'; header[13] = 'm'; header[14] = 't'; header[15] = ' ';
+        header[16] = 16; header[17] = 0; header[18] = 0; header[19] = 0; 
+        header[20] = 1; header[21] = 0; 
+        header[22] = (byte) channels; header[23] = 0; 
+        header[24] = (byte) (sampleRate & 0xff); header[25] = (byte) ((sampleRate >> 8) & 0xff);
+        header[26] = (byte) ((sampleRate >> 16) & 0xff); header[27] = (byte) ((sampleRate >> 24) & 0xff);
+        int byteRate = sampleRate * channels * bitsPerSample / 8;
+        header[28] = (byte) (byteRate & 0xff); header[29] = (byte) ((byteRate >> 8) & 0xff);
+        header[30] = (byte) ((byteRate >> 16) & 0xff); header[31] = (byte) ((byteRate >> 24) & 0xff);
+        int blockAlign = channels * bitsPerSample / 8;
+        header[32] = (byte) (blockAlign & 0xff); header[33] = (byte) ((blockAlign >> 8) & 0xff);
+        header[34] = (byte) (bitsPerSample & 0xff); header[35] = (byte) ((bitsPerSample >> 8) & 0xff);
+        header[36] = 'd'; header[37] = 'a'; header[38] = 't'; header[39] = 'a';
+        out.write(header, 0, 44);
+    }
+
+    private void updateWavHeader(File file) throws IOException {
+        RandomAccessFile raf = new RandomAccessFile(file, "rw");
+        long length = file.length();
+        long chunkSize = length - 8;
+        long dataSize = length - 44;
+        raf.seek(4);
+        raf.write((int) (chunkSize & 0xff)); raf.write((int) ((chunkSize >> 8) & 0xff));
+        raf.write((int) ((chunkSize >> 16) & 0xff)); raf.write((int) ((chunkSize >> 24) & 0xff));
+        raf.seek(40);
+        raf.write((int) (dataSize & 0xff)); raf.write((int) ((dataSize >> 8) & 0xff));
+        raf.write((int) ((dataSize >> 16) & 0xff)); raf.write((int) ((dataSize >> 24) & 0xff));
+        raf.close();
+    }
+
     @Override
     public void onDestroy() {
         isRunning = false;
+        if (fos != null) { try { fos.close(); } catch (IOException e) {} }
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
         if (audioRecord != null) audioRecord.stop();
         EventRepository.getInstance().addEvent(new LogEvent(LogEvent.Type.STOP));
