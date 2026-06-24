@@ -1,4 +1,5 @@
 package com.example.nursevad;
+
 import androidx.lifecycle.MutableLiveData;
 import java.util.ArrayList;
 import java.util.List;
@@ -15,10 +16,13 @@ public class EventRepository {
     public void addEvent(LogEvent event) {
         List<LogEvent> current = liveEvents.getValue();
         List<LogEvent> newList = new ArrayList<>();
+        
+        // Add new event at the TOP (index 0)
+        newList.add(event); 
+        
         if (current != null) {
             newList.addAll(current);
         }
-        newList.add(event);
         liveEvents.postValue(newList);
     }
 

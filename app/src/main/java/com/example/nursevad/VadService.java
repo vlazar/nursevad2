@@ -101,7 +101,7 @@ public class VadService extends Service {
             
             loadAudioFiles();
             startRecording();
-            EventBus.getInstance().postStatus("Listening..."); // Immediate status
+            EventBus.getInstance().postStatus("Listening...");
             EventRepository.getInstance().addEvent(new LogEvent(LogEvent.Type.START));
         }
         return START_STICKY;
@@ -155,7 +155,6 @@ public class VadService extends Service {
         float prob = 0;
         if (vad != null) prob = vad.predict(chunk);
         
-        // Real-time debug overlay
         EventBus.getInstance().postDebug("Vol: " + percent + "% | VAD Prob: " + String.format("%.3f", prob));
 
         if (prob > 0.5 && !isSpeaking) {
@@ -234,9 +233,17 @@ public class VadService extends Service {
             mediaPlayer = new MediaPlayer();
             mediaPlayer.setDataSource(this, Uri.parse(uriString));
             mediaPlayer.prepare();
-            mediaPlayer.setOnCompletionListener(mp -> isPaused = false);
+            mediaPlayer.setOnCompletionListener(mp -> {
+                isPaused = false;
+                EventBus.getInstance().postStatus("Listening...");
+            });
             mediaPlayer.start();
-        } catch (IOException e) { isPaused = false; }
+            String name = Uri.parse(uriString).getLastPathSegment();
+            EventBus.getInstance().postStatus("Playing: " + name);
+        } catch (Exception e) { 
+            isPaused = false; 
+            EventBus.getInstance().postDebug("Playback error: " + e.getMessage());
+        }
     }
 
     private String pickFile(int level) {
@@ -260,22 +267,56 @@ public class VadService extends Service {
 
     private void loadAudioFiles() {
         String uriStr = SettingsManager.getFolderUri(this);
-        if (uriStr == null) return;
+        if (uriStr == null) {
+            EventBus.getInstance().postDebug("No folder selected in settings.");
+            return;
+        }
         DocumentFile root = DocumentFile.fromTreeUri(this, Uri.parse(uriStr));
-        if (root == null) return;
+        if (root == null) {
+            EventBus.getInstance().postDebug("Cannot access selected folder.");
+            return;
+        }
+
+        StringBuilder debugMsg = new StringBuilder();
+        DocumentFile[] rootFiles = root.listFiles();
+        if (rootFiles == null) rootFiles = new DocumentFile[0];
 
         for (int i = 1; i <= 5; i++) {
-            DocumentFile levelDir = root.findFile("Level " + i);
-            if (levelDir != null && levelDir.isDirectory()) {
-                List<String> files = new ArrayList<>();
-                for (DocumentFile f : levelDir.listFiles()) {
-                    if (!f.getName().startsWith(".") && f.isFile()) {
-                        files.add(f.getUri().toString());
+            List<String> levelFilesList = new ArrayList<>();
+            DocumentFile levelDir = null;
+
+            // 1. Try exact match "Level X"
+            levelDir = root.findFile("Level " + i);
+            
+            // 2. Fallback: search for any directory containing the number (handles "Level_1", "level1", etc.)
+            if (levelDir == null || !levelDir.isDirectory()) {
+                for (DocumentFile f : rootFiles) {
+                    if (f.isDirectory() && f.getName() != null && f.getName().contains(String.valueOf(i))) {
+                        levelDir = f;
+                        break;
                     }
                 }
-                levelFiles.put(i, files);
             }
+
+            // 3. Edge case: User selected the "Level X" folder directly instead of parent
+            if ((levelDir == null || !levelDir.isDirectory()) && root.getName() != null && root.getName().contains(String.valueOf(i))) {
+                levelDir = root;
+            }
+
+            if (levelDir != null && levelDir.isDirectory()) {
+                DocumentFile[] audioFiles = levelDir.listFiles();
+                if (audioFiles != null) {
+                    for (DocumentFile f : audioFiles) {
+                        if (f != null && f.getName() != null && !f.getName().startsWith(".") && f.isFile()) {
+                            levelFilesList.add(f.getUri().toString());
+                        }
+                    }
+                }
+            }
+            levelFiles.put(i, levelFilesList);
+            debugMsg.append("L").append(i).append(":").append(levelFilesList.size()).append(" ");
         }
+        EventBus.getInstance().postDebug("Files found -> " + debugMsg.toString());
     }
 
     @Override

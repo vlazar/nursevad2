@@ -75,7 +75,7 @@ public class LogAdapter extends ListAdapter<LogEvent, LogAdapter.ViewHolder> {
             if (event.type == LogEvent.Type.SPEECH) {
                 int color = getColorForLevel(event.level);
                 swatch.setBackgroundColor(color);
-                swatch.setImageResource(0); // Clear icon
+                swatch.setImageResource(0); 
                 swatch.setAlpha(1.0f);
                 
                 tvTitle.setText(time + " - Level " + event.level);
@@ -94,40 +94,41 @@ public class LogAdapter extends ListAdapter<LogEvent, LogAdapter.ViewHolder> {
                 btnPlay.setOnClickListener(v -> {
                     if (listener != null && event.uriString != null) {
                         listener.onPlayClick(event.uriString);
+                    } else {
+                        EventBus.getInstance().postDebug("Play clicked, but no audio file was assigned to this event.");
                     }
                 });
 
             } else {
-                // START or STOP events
                 btnPlay.setVisibility(View.GONE);
                 tvPlayed.setVisibility(View.GONE);
                 swatch.setBackgroundColor(Color.TRANSPARENT);
                 
                 if (event.type == LogEvent.Type.START) {
                     swatch.setImageResource(android.R.drawable.ic_media_play);
-                    swatch.setColorFilter(Color.GRAY); // Gray icon
+                    swatch.setColorFilter(Color.GRAY); 
                     tvTitle.setText(time + " - Start");
-                    tvTitle.setTextColor(Color.parseColor("#2E7D32")); // Dark Green
+                    tvTitle.setTextColor(Color.parseColor("#2E7D32")); 
                     tvTitle.setTypeface(null, android.graphics.Typeface.BOLD);
-                    itemView.setBackgroundColor(Color.parseColor("#E8F5E9")); // Light Green BG
+                    itemView.setBackgroundColor(Color.parseColor("#E8F5E9")); 
                 } else {
-                    swatch.setImageResource(android.R.drawable.ic_menu_close_clear_cancel); // Stop/Cancel icon
-                    swatch.setColorFilter(Color.GRAY); // Gray icon
+                    swatch.setImageResource(android.R.drawable.ic_menu_close_clear_cancel); 
+                    swatch.setColorFilter(Color.GRAY); 
                     tvTitle.setText(time + " - Stop");
-                    tvTitle.setTextColor(Color.parseColor("#C62828")); // Dark Red
+                    tvTitle.setTextColor(Color.parseColor("#C62828")); 
                     tvTitle.setTypeface(null, android.graphics.Typeface.BOLD);
-                    itemView.setBackgroundColor(Color.parseColor("#FFEBEE")); // Light Red BG
+                    itemView.setBackgroundColor(Color.parseColor("#FFEBEE")); 
                 }
             }
         }
 
         private int getColorForLevel(int level) {
             switch (level) {
-                case 1: return Color.parseColor("#4CAF50"); // Green
-                case 2: return Color.parseColor("#8BC34A"); // Light Green
-                case 3: return Color.parseColor("#FFEB3B"); // Yellow
-                case 4: return Color.parseColor("#FF9800"); // Orange
-                case 5: return Color.parseColor("#F44336"); // Red
+                case 1: return Color.parseColor("#4CAF50"); 
+                case 2: return Color.parseColor("#8BC34A"); 
+                case 3: return Color.parseColor("#FFEB3B"); 
+                case 4: return Color.parseColor("#FF9800"); 
+                case 5: return Color.parseColor("#F44336"); 
                 default: return Color.GRAY;
             }
         }
