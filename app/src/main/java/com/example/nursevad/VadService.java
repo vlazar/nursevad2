@@ -33,13 +33,20 @@ public class VadService extends Service {
     private int frameCount = 0;
     private int silenceFrames = 0;
 
-    // Recording variables
     private FileOutputStream fos;
     private File recordedFile;
 
     private Map<Integer, List<AudioFile>> levelFiles = new HashMap<>();
     private Map<Integer, List<AudioFile>> queues = new HashMap<>();
     private Map<Integer, String> lastPlayed = new HashMap<>();
+
+    private Handler handler = new Handler(Looper.getMainLooper());
+    private Runnable delayedResponseRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (isSpeaking) finalizeSpeechEvent();
+        }
+    };
 
     @Override
     public void onCreate() {
@@ -89,6 +96,17 @@ public class VadService extends Service {
             if ("PLAY_SPECIFIC".equals(intent.getAction())) {
                 String uri = intent.getStringExtra("URI");
                 if (uri != null) playSpecificFile(uri);
+                return START_STICKY;
+            }
+            if ("STOP_PLAYBACK".equals(intent.getAction())) {
+                if (mediaPlayer != null && mediaPlayer.isPlaying()) {
+                    mediaPlayer.stop();
+                    mediaPlayer.release();
+                    mediaPlayer = null;
+                    isPaused = false;
+                    EventBus.getInstance().postPlayingUri(null);
+                    if (isRunning) EventBus.getInstance().postStatus("Listening...");
+                }
                 return START_STICKY;
             }
         }
@@ -153,18 +171,25 @@ public class VadService extends Service {
             speechStartMs = SystemClock.elapsedRealtime();
             accumulatedDb = 0; frameCount = 0; silenceFrames = 0;
             
-            // START RECORDING SPEECH TO FILE
             try {
                 recordedFile = new File(getCacheDir(), "speech_" + speechStartMs + ".wav");
                 fos = new FileOutputStream(recordedFile);
                 writeWavHeader(fos, 16000, 1, 16);
-            } catch (Exception e) {
-                EventBus.getInstance().postDebug("ERR: Record start failed");
+            } catch (Exception e) {}
+
+            boolean waitForEnd = SettingsManager.getWaitForEnd(this);
+            int delaySec = SettingsManager.getDelay(this);
+            
+            if (!waitForEnd) {
+                if (delaySec > 0) {
+                    handler.postDelayed(delayedResponseRunnable, delaySec * 1000L);
+                } else {
+                    handler.post(delayedResponseRunnable);
+                }
             }
         }
 
         if (isSpeaking) {
-            // WRITE AUDIO CHUNK TO FILE
             if (fos != null) {
                 byte[] byteBuffer = new byte[chunk.length * 2];
                 for (int i = 0; i < chunk.length; i++) {
@@ -179,40 +204,48 @@ public class VadService extends Service {
             if (prob < 0.4) silenceFrames++;
             else silenceFrames = 0;
 
-            if (silenceFrames > 15) { 
-                isSpeaking = false;
-                
-                // STOP RECORDING AND FINALIZE WAV
-                if (fos != null) {
-                    try {
-                        fos.close();
-                        updateWavHeader(recordedFile);
-                    } catch (IOException e) {}
-                    fos = null;
-                }
-                
-                long durationMs = SystemClock.elapsedRealtime() - speechStartMs;
-                int thresholdSec = SettingsManager.getDurationThreshold(this);
-                
-                if (durationMs >= thresholdSec * 1000) {
-                    double avgDb = accumulatedDb / frameCount;
-                    int avgPercent = (int) Math.round((avgDb + 50.0) / 50.0 * 100.0);
-                    avgPercent = Math.max(0, Math.min(100, avgPercent));
-                    int level = getLevel(avgPercent);
-                    
-                    AudioFile file = pickFile(level);
-                    String recordedUri = (recordedFile != null) ? Uri.fromFile(recordedFile).toString() : null;
-                    
-                    LogEvent event = new LogEvent(LogEvent.Type.SPEECH, level, file, recordedUri);
-                    EventRepository.getInstance().addEvent(event);
-                    
-                    if (file != null) {
-                        triggerPlay(file);
-                    } else {
-                        EventBus.getInstance().postStatus("Listening... (No files in Level " + level + ")");
-                    }
-                }
+            if (silenceFrames > 15) {
+                handler.removeCallbacks(delayedResponseRunnable);
+                finalizeSpeechEvent();
             }
+        }
+    }
+
+    private void finalizeSpeechEvent() {
+        isSpeaking = false;
+        silenceFrames = 0;
+        handler.removeCallbacks(delayedResponseRunnable);
+        
+        if (fos != null) {
+            try {
+                fos.close();
+                updateWavHeader(recordedFile);
+            } catch (IOException e) {}
+            fos = null;
+        }
+        
+        long durationMs = SystemClock.elapsedRealtime() - speechStartMs;
+        int thresholdSec = SettingsManager.getDurationThreshold(this);
+        
+        if (durationMs >= thresholdSec * 1000) {
+            double avgDb = accumulatedDb / frameCount;
+            int avgPercent = (int) Math.round((avgDb + 50.0) / 50.0 * 100.0);
+            avgPercent = Math.max(0, Math.min(100, avgPercent));
+            int level = getLevel(avgPercent);
+            
+            AudioFile file = pickFile(level);
+            String recordedUri = (recordedFile != null) ? Uri.fromFile(recordedFile).toString() : null;
+            
+            LogEvent event = new LogEvent(LogEvent.Type.SPEECH, level, file, recordedUri);
+            EventRepository.getInstance().addEvent(event);
+            
+            if (file != null) {
+                triggerPlay(file);
+            } else {
+                EventBus.getInstance().postStatus("Listening... (No files in Level " + level + ")");
+            }
+        } else {
+            EventBus.getInstance().postStatus("Listening...");
         }
     }
 
@@ -228,7 +261,8 @@ public class VadService extends Service {
     private void triggerPlay(AudioFile file) {
         if (file == null) return;
         isPaused = true;
-        EventBus.getInstance().postStatus("Playing: " + file.displayName); // Clean Name
+        EventBus.getInstance().postStatus("Playing: " + file.displayName);
+        EventBus.getInstance().postPlayingUri(file.uri);
         
         try {
             if (mediaPlayer != null) mediaPlayer.release();
@@ -237,23 +271,25 @@ public class VadService extends Service {
             mediaPlayer.prepare();
             mediaPlayer.setOnCompletionListener(mp -> {
                 isPaused = false;
+                EventBus.getInstance().postPlayingUri(null);
                 EventBus.getInstance().postStatus("Listening...");
             });
             mediaPlayer.start();
         } catch (IOException e) {
             isPaused = false;
+            EventBus.getInstance().postPlayingUri(null);
             EventBus.getInstance().postStatus("Listening... (Playback error)");
         }
     }
 
     public void playSpecificFile(String uriString) {
         isPaused = true;
+        EventBus.getInstance().postPlayingUri(uriString);
         try {
             if (mediaPlayer != null) mediaPlayer.release();
             mediaPlayer = new MediaPlayer();
             
             Uri uri = Uri.parse(uriString);
-            // Handle local file:// URIs securely
             if ("file".equals(uri.getScheme())) {
                 mediaPlayer.setDataSource(uri.getPath());
             } else {
@@ -263,13 +299,14 @@ public class VadService extends Service {
             mediaPlayer.prepare();
             mediaPlayer.setOnCompletionListener(mp -> {
                 isPaused = false;
+                EventBus.getInstance().postPlayingUri(null);
                 if (isRunning) EventBus.getInstance().postStatus("Listening...");
             });
             mediaPlayer.start();
             EventBus.getInstance().postStatus("Playing recorded speech");
         } catch (Exception e) { 
             isPaused = false; 
-            EventBus.getInstance().postDebug("Playback error: " + e.getMessage());
+            EventBus.getInstance().postPlayingUri(null);
         }
     }
 
@@ -323,9 +360,9 @@ public class VadService extends Service {
                 if (audioFiles != null) {
                     for (DocumentFile f : audioFiles) {
                         if (f != null && f.getName() != null && !f.getName().startsWith(".") && f.isFile()) {
-                            // Clean the file name: remove extension, underscores, dashes
+                            // Fix: replace "_" and "-" with spaces
                             String name = f.getName(); 
-                            String cleanName = name.replaceAll("\\.[^.]+$", "").replace("_", "").replace("-", "");
+                            String cleanName = name.replaceAll("\\.[^.]+$", "").replace("_", " ").replace("-", " ").replaceAll("\\s+", " ").trim();
                             levelFilesList.add(new AudioFile(f.getUri().toString(), cleanName));
                         }
                     }
@@ -337,7 +374,6 @@ public class VadService extends Service {
         EventBus.getInstance().postDebug("Files found -> " + debugMsg.toString());
     }
 
-    // --- WAV HEADER UTILITIES ---
     private void writeWavHeader(FileOutputStream out, int sampleRate, int channels, int bitsPerSample) throws IOException {
         byte[] header = new byte[44];
         header[0] = 'R'; header[1] = 'I'; header[2] = 'F'; header[3] = 'F';
@@ -375,6 +411,7 @@ public class VadService extends Service {
     @Override
     public void onDestroy() {
         isRunning = false;
+        handler.removeCallbacks(delayedResponseRunnable);
         if (fos != null) { try { fos.close(); } catch (IOException e) {} }
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
         if (audioRecord != null) audioRecord.stop();

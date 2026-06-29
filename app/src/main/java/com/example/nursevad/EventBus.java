@@ -8,6 +8,7 @@ public class EventBus {
     private final MutableLiveData<Integer> volume = new MutableLiveData<>(0);
     private final MutableLiveData<String> status = new MutableLiveData<>("Idle");
     private final MutableLiveData<String> debug = new MutableLiveData<>("");
+    private final MutableLiveData<String> playingUri = new MutableLiveData<>(null);
 
     private EventBus() {}
 
@@ -24,4 +25,7 @@ public class EventBus {
 
     public void postDebug(String msg) { debug.postValue(msg); }
     public LiveData<String> getDebug() { return debug; }
+
+    public void postPlayingUri(String uri) { playingUri.postValue(uri); }
+    public LiveData<String> getPlayingUri() { return playingUri; }
 }

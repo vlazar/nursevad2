@@ -5,9 +5,9 @@ public class LogEvent {
     public Type type;
     public long timestamp;
     public int level;
-    public String uriString; // Response audio URI
-    public String displayName; // Cleaned response audio name
-    public String recordedSpeechUri; // URI to the recorded user speech
+    public String uriString; 
+    public String displayName; 
+    public String recordedSpeechUri; 
 
     public LogEvent(Type type) {
         this.type = type;
@@ -22,7 +22,8 @@ public class LogEvent {
         
         if (audioFile != null) {
             this.uriString = audioFile.uri;
-            this.displayName = audioFile.displayName;
+            // Fix: Replace "_" and "-" with spaces
+            this.displayName = audioFile.displayName; 
         } else {
             this.uriString = null;
             this.displayName = "No file found";

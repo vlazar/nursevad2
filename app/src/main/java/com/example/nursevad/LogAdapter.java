@@ -19,10 +19,12 @@ public class LogAdapter extends ListAdapter<LogEvent, LogAdapter.ViewHolder> {
 
     public interface OnPlayClickListener {
         void onPlayClick(String uriString);
+        void onStopClick();
     }
 
     private final OnPlayClickListener listener;
     private final SimpleDateFormat sdf = new SimpleDateFormat("HH:mm:ss", Locale.getDefault());
+    private String currentPlayingUri = null;
 
     public LogAdapter(OnPlayClickListener listener) {
         super(new DiffUtil.ItemCallback<LogEvent>() {
@@ -40,6 +42,11 @@ public class LogAdapter extends ListAdapter<LogEvent, LogAdapter.ViewHolder> {
             }
         });
         this.listener = listener;
+    }
+
+    public void setPlayingUri(String uri) {
+        this.currentPlayingUri = uri;
+        notifyDataSetChanged(); // Refresh icons
     }
 
     @NonNull
@@ -90,13 +97,24 @@ public class LogAdapter extends ListAdapter<LogEvent, LogAdapter.ViewHolder> {
                     tvPlayed.setVisibility(View.GONE);
                 }
                 
+                boolean isPlaying = event.recordedSpeechUri != null && event.recordedSpeechUri.equals(currentPlayingUri);
+                
+                if (isPlaying) {
+                    btnPlay.setImageResource(android.R.drawable.ic_media_pause);
+                    btnPlay.setColorFilter(Color.RED);
+                } else {
+                    btnPlay.setImageResource(android.R.drawable.ic_media_play);
+                    btnPlay.setColorFilter(Color.GRAY);
+                }
+                
                 btnPlay.setVisibility(View.VISIBLE);
                 btnPlay.setOnClickListener(v -> {
-                    // Play the RECORDED speech, not the response audio
                     if (listener != null && event.recordedSpeechUri != null) {
-                        listener.onPlayClick(event.recordedSpeechUri);
-                    } else {
-                        EventBus.getInstance().postDebug("Play clicked, but no recorded speech found.");
+                        if (isPlaying) {
+                            listener.onStopClick();
+                        } else {
+                            listener.onPlayClick(event.recordedSpeechUri);
+                        }
                     }
                 });
 

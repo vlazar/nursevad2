@@ -12,7 +12,13 @@
         android:gravity="center_vertical">
         <Button android:id="@+id/btnStartStop" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Start" />
         <View android:layout_width="0dp" android:layout_height="0dp" android:layout_weight="1" />
-        <ImageButton android:id="@+id/btnClear" android:layout_width="48dp" android:layout_height="48dp" android:src="@android:drawable/ic_menu_delete" android:background="?attr/selectableItemBackgroundBorderless" />
+        <ImageButton 
+            android:id="@+id/btnClear" 
+            android:layout_width="48dp" 
+            android:layout_height="48dp" 
+            android:src="@android:drawable/ic_menu_delete" 
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:layout_marginEnd="12dp" /> <!-- Aligns with ActionBar gear icon -->
     </LinearLayout>
 
     <ProgressBar

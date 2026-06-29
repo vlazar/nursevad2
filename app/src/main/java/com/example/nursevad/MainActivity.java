@@ -24,6 +24,7 @@ public class MainActivity extends AppCompatActivity {
     private TextView statusText;
     private TextView tvDebug;
     private ProgressBar volumeMeter;
+    private RecyclerView recyclerView;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -33,7 +34,6 @@ public class MainActivity extends AppCompatActivity {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.RECORD_AUDIO}, 101);
         }
-
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                 ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.POST_NOTIFICATIONS}, 102);
@@ -45,18 +45,33 @@ public class MainActivity extends AppCompatActivity {
         volumeMeter = findViewById(R.id.volumeMeter);
         Button btnStartStop = findViewById(R.id.btnStartStop);
         ImageButton btnClear = findViewById(R.id.btnClear);
-        RecyclerView recyclerView = findViewById(R.id.recyclerView);
+        recyclerView = findViewById(R.id.recyclerView);
 
         recyclerView.setLayoutManager(new LinearLayoutManager(this));
-        adapter = new LogAdapter(uri -> {
-            Intent i = new Intent(this, VadService.class);
-            i.setAction("PLAY_SPECIFIC");
-            i.putExtra("URI", uri);
-            startService(i);
+        
+        adapter = new LogAdapter(new LogAdapter.OnPlayClickListener() {
+            @Override
+            public void onPlayClick(String uriString) {
+                Intent i = new Intent(MainActivity.this, VadService.class);
+                i.setAction("PLAY_SPECIFIC");
+                i.putExtra("URI", uriString);
+                startService(i);
+            }
+
+            @Override
+            public void onStopClick() {
+                Intent i = new Intent(MainActivity.this, VadService.class);
+                i.setAction("STOP_PLAYBACK");
+                startService(i);
+            }
         });
         recyclerView.setAdapter(adapter);
 
-        EventRepository.getInstance().getLiveEvents().observe(this, events -> adapter.submitList(events));
+        EventRepository.getInstance().getLiveEvents().observe(this, events -> {
+            adapter.submitList(events);
+            // Auto-scroll to top when new event is added
+            recyclerView.smoothScrollToPosition(0);
+        });
 
         btnStartStop.setOnClickListener(v -> {
             Intent i = new Intent(this, VadService.class);
@@ -86,6 +101,9 @@ public class MainActivity extends AppCompatActivity {
         
         EventBus.getInstance().getVolume().observe(this, vol -> volumeMeter.setProgress(vol));
         EventBus.getInstance().getDebug().observe(this, msg -> tvDebug.setText(msg));
+        
+        // Observe playback state to update the adapter's play/pause icons
+        EventBus.getInstance().getPlayingUri().observe(this, uri -> adapter.setPlayingUri(uri));
     }
 
     @Override
