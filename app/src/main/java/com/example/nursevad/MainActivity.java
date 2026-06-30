@@ -25,11 +25,17 @@ public class MainActivity extends AppCompatActivity {
     private TextView tvDebug;
     private ProgressBar volumeMeter;
     private RecyclerView recyclerView;
+    private Button btnStartStop;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+
+        // Restore state after orientation change
+        if (savedInstanceState != null) {
+            isListening = savedInstanceState.getBoolean("isListening", false);
+        }
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.RECORD_AUDIO}, 101);
@@ -43,9 +49,16 @@ public class MainActivity extends AppCompatActivity {
         statusText = findViewById(R.id.statusText);
         tvDebug = findViewById(R.id.tvDebug);
         volumeMeter = findViewById(R.id.volumeMeter);
-        Button btnStartStop = findViewById(R.id.btnStartStop);
+        btnStartStop = findViewById(R.id.btnStartStop);
         ImageButton btnClear = findViewById(R.id.btnClear);
         recyclerView = findViewById(R.id.recyclerView);
+
+        // Apply restored state to UI
+        if (isListening) {
+            btnStartStop.setText("Stop");
+        } else {
+            btnStartStop.setText("Start");
+        }
 
         recyclerView.setLayoutManager(new LinearLayoutManager(this));
         
@@ -69,7 +82,6 @@ public class MainActivity extends AppCompatActivity {
 
         EventRepository.getInstance().getLiveEvents().observe(this, events -> {
             adapter.submitList(events);
-            // Instant scroll to top to ensure new item is visible immediately
             recyclerView.scrollToPosition(0);
         });
 
@@ -103,6 +115,23 @@ public class MainActivity extends AppCompatActivity {
         EventBus.getInstance().getDebug().observe(this, msg -> tvDebug.setText(msg));
         
         EventBus.getInstance().getPlayingUri().observe(this, uri -> adapter.setPlayingUri(uri));
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle outState) {
+        super.onSaveInstanceState(outState);
+        outState.putBoolean("isListening", isListening);
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        // If the user is exiting the app (not just rotating screen), stop the service
+        if (!isChangingConfigurations() && isListening) {
+            Intent i = new Intent(this, VadService.class);
+            i.setAction("STOP");
+            startService(i);
+        }
     }
 
     @Override

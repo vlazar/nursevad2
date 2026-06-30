@@ -29,7 +29,7 @@ public class VadService extends Service {
 
     private boolean isSpeaking = false;
     private boolean speechEnded = false;
-    private boolean isProcessingResponse = false; // Locks state machine during delay/playback
+    private boolean isProcessingResponse = false;
     
     private long speechStartMs = 0;
     private double accumulatedDb = 0;
@@ -104,6 +104,7 @@ public class VadService extends Service {
                     isProcessingResponse = false;
                     EventBus.getInstance().postPlayingUri(null);
                     if (isRunning) EventBus.getInstance().postStatus("Listening...");
+                    else EventBus.getInstance().postStatus("Idle");
                 }
                 return START_STICKY;
             }
@@ -123,6 +124,13 @@ public class VadService extends Service {
             EventRepository.getInstance().addEvent(new LogEvent(LogEvent.Type.START));
         }
         return START_STICKY;
+    }
+
+    // Ensures the mic turns off if the user swipes the app away from recent apps
+    @Override
+    public void onTaskRemoved(Intent rootIntent) {
+        super.onTaskRemoved(rootIntent);
+        stopSelf();
     }
 
     private void startRecording() {
@@ -154,7 +162,11 @@ public class VadService extends Service {
         for (short s : chunk) sum += s * s;
         double rms = Math.sqrt(sum / chunk.length);
         double db = 20 * Math.log10(rms / 32768.0);
-        int percent = (int) Math.round((db + 50.0) / 50.0 * 100.0);
+        
+        // Perceptual Loudness Curve (Power of 1.5)
+        double normalizedDb = (db + 50.0) / 50.0;
+        normalizedDb = Math.max(0.0, Math.min(1.0, normalizedDb));
+        int percent = (int) Math.round(100.0 * Math.pow(normalizedDb, 1.5));
         percent = Math.max(0, Math.min(100, percent));
         
         EventBus.getInstance().postVolume(percent);
@@ -164,7 +176,6 @@ public class VadService extends Service {
         
         EventBus.getInstance().postDebug("Vol: " + percent + "% | VAD Prob: " + String.format("%.3f", prob));
 
-        // 1. Speech Start
         if (prob > 0.5 && !isSpeaking && !isProcessingResponse) {
             isSpeaking = true;
             speechEnded = false;
@@ -181,7 +192,7 @@ public class VadService extends Service {
             int delaySec = SettingsManager.getDelay(this);
             
             if (!waitForEnd) {
-                isProcessingResponse = true; // Lock state machine
+                isProcessingResponse = true;
                 if (delaySec > 0) {
                     handler.postDelayed(() -> triggerResponse(), delaySec * 1000L);
                 } else {
@@ -190,7 +201,6 @@ public class VadService extends Service {
             }
         }
 
-        // 2. Speech Ongoing
         if (isSpeaking) {
             if (fos != null) {
                 byte[] byteBuffer = new byte[chunk.length * 2];
@@ -206,7 +216,6 @@ public class VadService extends Service {
             if (prob < 0.4) silenceFrames++;
             else silenceFrames = 0;
 
-            // 3. Speech End
             if (silenceFrames > 15 && !speechEnded) {
                 speechEnded = true;
                 isSpeaking = false;
@@ -223,7 +232,7 @@ public class VadService extends Service {
                 int delaySec = SettingsManager.getDelay(this);
                 
                 if (waitForEnd) {
-                    isProcessingResponse = true; // Lock state machine
+                    isProcessingResponse = true;
                     if (delaySec > 0) {
                         handler.postDelayed(() -> triggerResponse(), delaySec * 1000L);
                     } else {
@@ -242,8 +251,13 @@ public class VadService extends Service {
         
         if (durationMs >= thresholdSec * 1000) {
             double avgDb = accumulatedDb / frameCount;
-            int avgPercent = (int) Math.round((avgDb + 50.0) / 50.0 * 100.0);
+            
+            // Perceptual Loudness Curve (Power of 1.5)
+            double normalizedAvgDb = (avgDb + 50.0) / 50.0;
+            normalizedAvgDb = Math.max(0.0, Math.min(1.0, normalizedAvgDb));
+            int avgPercent = (int) Math.round(100.0 * Math.pow(normalizedAvgDb, 1.5));
             avgPercent = Math.max(0, Math.min(100, avgPercent));
+            
             int level = getLevel(avgPercent);
             
             AudioFile file = pickFile(level);
@@ -256,11 +270,11 @@ public class VadService extends Service {
                 triggerPlay(file);
             } else {
                 EventBus.getInstance().postStatus("Listening... (No files in Level " + level + ")");
-                isProcessingResponse = false; // Unlock
+                isProcessingResponse = false;
             }
         } else {
             EventBus.getInstance().postStatus("Listening...");
-            isProcessingResponse = false; // Unlock
+            isProcessingResponse = false;
         }
     }
 
@@ -286,16 +300,18 @@ public class VadService extends Service {
             mediaPlayer.prepare();
             mediaPlayer.setOnCompletionListener(mp -> {
                 isPaused = false;
-                isProcessingResponse = false; // Unlock for next utterance
+                isProcessingResponse = false;
                 EventBus.getInstance().postPlayingUri(null);
-                EventBus.getInstance().postStatus("Listening...");
+                if (isRunning) EventBus.getInstance().postStatus("Listening...");
+                else EventBus.getInstance().postStatus("Idle");
             });
             mediaPlayer.start();
         } catch (IOException e) {
             isPaused = false;
             isProcessingResponse = false;
             EventBus.getInstance().postPlayingUri(null);
-            EventBus.getInstance().postStatus("Listening... (Playback error)");
+            if (isRunning) EventBus.getInstance().postStatus("Listening...");
+            else EventBus.getInstance().postStatus("Idle");
         }
     }
 
@@ -319,13 +335,16 @@ public class VadService extends Service {
                 isProcessingResponse = false;
                 EventBus.getInstance().postPlayingUri(null);
                 if (isRunning) EventBus.getInstance().postStatus("Listening...");
+                else EventBus.getInstance().postStatus("Idle");
             });
             mediaPlayer.start();
-            EventBus.getInstance().postStatus("Playing recorded speech");
+            EventBus.getInstance().postStatus("Playing recorded speech...");
         } catch (Exception e) { 
             isPaused = false; 
             isProcessingResponse = false;
             EventBus.getInstance().postPlayingUri(null);
+            if (isRunning) EventBus.getInstance().postStatus("Listening...");
+            else EventBus.getInstance().postStatus("Idle");
         }
     }
 

@@ -91,7 +91,7 @@ public class LogAdapter extends ListAdapter<LogEvent, LogAdapter.ViewHolder> {
                 itemView.setBackgroundColor(Color.TRANSPARENT);
                 
                 if (event.displayName != null && !event.displayName.isEmpty()) {
-                    tvPlayed.setText("Played: " + event.displayName);
+                    tvPlayed.setText(event.displayName); // Removed "Played: " prefix
                     tvPlayed.setVisibility(View.VISIBLE);
                 } else {
                     tvPlayed.setVisibility(View.GONE);
@@ -101,10 +101,10 @@ public class LogAdapter extends ListAdapter<LogEvent, LogAdapter.ViewHolder> {
                 
                 if (isPlaying) {
                     btnPlay.setImageResource(R.drawable.ic_stop);
-                    btnPlay.setColorFilter(Color.parseColor("#E57373")); // Lighter Red
+                    btnPlay.setColorFilter(Color.parseColor("#E57373")); 
                 } else {
                     btnPlay.setImageResource(R.drawable.ic_play);
-                    btnPlay.setColorFilter(Color.parseColor("#9E9E9E")); // Lighter Gray
+                    btnPlay.setColorFilter(Color.parseColor("#9E9E9E")); 
                 }
                 
                 btnPlay.setVisibility(View.VISIBLE);
@@ -131,7 +131,6 @@ public class LogAdapter extends ListAdapter<LogEvent, LogAdapter.ViewHolder> {
                     tvTitle.setTypeface(null, android.graphics.Typeface.BOLD);
                     itemView.setBackgroundColor(Color.parseColor("#E8F5E9")); 
                 } else {
-                    // Replaced cross icon with Stop icon
                     swatch.setImageResource(R.drawable.ic_stop);
                     swatch.setColorFilter(Color.GRAY); 
                     tvTitle.setText(time + " - Stop");
