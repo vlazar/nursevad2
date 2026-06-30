@@ -28,6 +28,9 @@ public class VadService extends Service {
     private MediaPlayer mediaPlayer;
 
     private boolean isSpeaking = false;
+    private boolean speechEnded = false;
+    private boolean isProcessingResponse = false; // Locks state machine during delay/playback
+    
     private long speechStartMs = 0;
     private double accumulatedDb = 0;
     private int frameCount = 0;
@@ -41,12 +44,6 @@ public class VadService extends Service {
     private Map<Integer, String> lastPlayed = new HashMap<>();
 
     private Handler handler = new Handler(Looper.getMainLooper());
-    private Runnable delayedResponseRunnable = new Runnable() {
-        @Override
-        public void run() {
-            if (isSpeaking) finalizeSpeechEvent();
-        }
-    };
 
     @Override
     public void onCreate() {
@@ -104,6 +101,7 @@ public class VadService extends Service {
                     mediaPlayer.release();
                     mediaPlayer = null;
                     isPaused = false;
+                    isProcessingResponse = false;
                     EventBus.getInstance().postPlayingUri(null);
                     if (isRunning) EventBus.getInstance().postStatus("Listening...");
                 }
@@ -166,8 +164,10 @@ public class VadService extends Service {
         
         EventBus.getInstance().postDebug("Vol: " + percent + "% | VAD Prob: " + String.format("%.3f", prob));
 
-        if (prob > 0.5 && !isSpeaking) {
+        // 1. Speech Start
+        if (prob > 0.5 && !isSpeaking && !isProcessingResponse) {
             isSpeaking = true;
+            speechEnded = false;
             speechStartMs = SystemClock.elapsedRealtime();
             accumulatedDb = 0; frameCount = 0; silenceFrames = 0;
             
@@ -181,14 +181,16 @@ public class VadService extends Service {
             int delaySec = SettingsManager.getDelay(this);
             
             if (!waitForEnd) {
+                isProcessingResponse = true; // Lock state machine
                 if (delaySec > 0) {
-                    handler.postDelayed(delayedResponseRunnable, delaySec * 1000L);
+                    handler.postDelayed(() -> triggerResponse(), delaySec * 1000L);
                 } else {
-                    handler.post(delayedResponseRunnable);
+                    handler.post(() -> triggerResponse());
                 }
             }
         }
 
+        // 2. Speech Ongoing
         if (isSpeaking) {
             if (fos != null) {
                 byte[] byteBuffer = new byte[chunk.length * 2];
@@ -204,25 +206,36 @@ public class VadService extends Service {
             if (prob < 0.4) silenceFrames++;
             else silenceFrames = 0;
 
-            if (silenceFrames > 15) {
-                handler.removeCallbacks(delayedResponseRunnable);
-                finalizeSpeechEvent();
+            // 3. Speech End
+            if (silenceFrames > 15 && !speechEnded) {
+                speechEnded = true;
+                isSpeaking = false;
+                
+                if (fos != null) {
+                    try {
+                        fos.close();
+                        updateWavHeader(recordedFile);
+                    } catch (IOException e) {}
+                    fos = null;
+                }
+                
+                boolean waitForEnd = SettingsManager.getWaitForEnd(this);
+                int delaySec = SettingsManager.getDelay(this);
+                
+                if (waitForEnd) {
+                    isProcessingResponse = true; // Lock state machine
+                    if (delaySec > 0) {
+                        handler.postDelayed(() -> triggerResponse(), delaySec * 1000L);
+                    } else {
+                        handler.post(() -> triggerResponse());
+                    }
+                }
             }
         }
     }
 
-    private void finalizeSpeechEvent() {
-        isSpeaking = false;
-        silenceFrames = 0;
-        handler.removeCallbacks(delayedResponseRunnable);
-        
-        if (fos != null) {
-            try {
-                fos.close();
-                updateWavHeader(recordedFile);
-            } catch (IOException e) {}
-            fos = null;
-        }
+    private void triggerResponse() {
+        handler.removeCallbacksAndMessages(null);
         
         long durationMs = SystemClock.elapsedRealtime() - speechStartMs;
         int thresholdSec = SettingsManager.getDurationThreshold(this);
@@ -243,9 +256,11 @@ public class VadService extends Service {
                 triggerPlay(file);
             } else {
                 EventBus.getInstance().postStatus("Listening... (No files in Level " + level + ")");
+                isProcessingResponse = false; // Unlock
             }
         } else {
             EventBus.getInstance().postStatus("Listening...");
+            isProcessingResponse = false; // Unlock
         }
     }
 
@@ -271,12 +286,14 @@ public class VadService extends Service {
             mediaPlayer.prepare();
             mediaPlayer.setOnCompletionListener(mp -> {
                 isPaused = false;
+                isProcessingResponse = false; // Unlock for next utterance
                 EventBus.getInstance().postPlayingUri(null);
                 EventBus.getInstance().postStatus("Listening...");
             });
             mediaPlayer.start();
         } catch (IOException e) {
             isPaused = false;
+            isProcessingResponse = false;
             EventBus.getInstance().postPlayingUri(null);
             EventBus.getInstance().postStatus("Listening... (Playback error)");
         }
@@ -299,6 +316,7 @@ public class VadService extends Service {
             mediaPlayer.prepare();
             mediaPlayer.setOnCompletionListener(mp -> {
                 isPaused = false;
+                isProcessingResponse = false;
                 EventBus.getInstance().postPlayingUri(null);
                 if (isRunning) EventBus.getInstance().postStatus("Listening...");
             });
@@ -306,6 +324,7 @@ public class VadService extends Service {
             EventBus.getInstance().postStatus("Playing recorded speech");
         } catch (Exception e) { 
             isPaused = false; 
+            isProcessingResponse = false;
             EventBus.getInstance().postPlayingUri(null);
         }
     }
@@ -360,7 +379,6 @@ public class VadService extends Service {
                 if (audioFiles != null) {
                     for (DocumentFile f : audioFiles) {
                         if (f != null && f.getName() != null && !f.getName().startsWith(".") && f.isFile()) {
-                            // Fix: replace "_" and "-" with spaces
                             String name = f.getName(); 
                             String cleanName = name.replaceAll("\\.[^.]+$", "").replace("_", " ").replace("-", " ").replaceAll("\\s+", " ").trim();
                             levelFilesList.add(new AudioFile(f.getUri().toString(), cleanName));
@@ -411,7 +429,7 @@ public class VadService extends Service {
     @Override
     public void onDestroy() {
         isRunning = false;
-        handler.removeCallbacks(delayedResponseRunnable);
+        handler.removeCallbacksAndMessages(null);
         if (fos != null) { try { fos.close(); } catch (IOException e) {} }
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
         if (audioRecord != null) audioRecord.stop();

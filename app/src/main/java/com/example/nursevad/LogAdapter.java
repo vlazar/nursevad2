@@ -46,7 +46,7 @@ public class LogAdapter extends ListAdapter<LogEvent, LogAdapter.ViewHolder> {
 
     public void setPlayingUri(String uri) {
         this.currentPlayingUri = uri;
-        notifyDataSetChanged(); // Refresh icons
+        notifyDataSetChanged(); 
     }
 
     @NonNull
@@ -100,11 +100,11 @@ public class LogAdapter extends ListAdapter<LogEvent, LogAdapter.ViewHolder> {
                 boolean isPlaying = event.recordedSpeechUri != null && event.recordedSpeechUri.equals(currentPlayingUri);
                 
                 if (isPlaying) {
-                    btnPlay.setImageResource(android.R.drawable.ic_media_pause);
-                    btnPlay.setColorFilter(Color.RED);
+                    btnPlay.setImageResource(R.drawable.ic_stop);
+                    btnPlay.setColorFilter(Color.parseColor("#E57373")); // Lighter Red
                 } else {
-                    btnPlay.setImageResource(android.R.drawable.ic_media_play);
-                    btnPlay.setColorFilter(Color.GRAY);
+                    btnPlay.setImageResource(R.drawable.ic_play);
+                    btnPlay.setColorFilter(Color.parseColor("#9E9E9E")); // Lighter Gray
                 }
                 
                 btnPlay.setVisibility(View.VISIBLE);
@@ -124,14 +124,15 @@ public class LogAdapter extends ListAdapter<LogEvent, LogAdapter.ViewHolder> {
                 swatch.setBackgroundColor(Color.TRANSPARENT);
                 
                 if (event.type == LogEvent.Type.START) {
-                    swatch.setImageResource(android.R.drawable.ic_media_play);
+                    swatch.setImageResource(R.drawable.ic_play);
                     swatch.setColorFilter(Color.GRAY); 
                     tvTitle.setText(time + " - Start");
                     tvTitle.setTextColor(Color.parseColor("#2E7D32")); 
                     tvTitle.setTypeface(null, android.graphics.Typeface.BOLD);
                     itemView.setBackgroundColor(Color.parseColor("#E8F5E9")); 
                 } else {
-                    swatch.setImageResource(android.R.drawable.ic_menu_close_clear_cancel); 
+                    // Replaced cross icon with Stop icon
+                    swatch.setImageResource(R.drawable.ic_stop);
                     swatch.setColorFilter(Color.GRAY); 
                     tvTitle.setText(time + " - Stop");
                     tvTitle.setTextColor(Color.parseColor("#C62828")); 

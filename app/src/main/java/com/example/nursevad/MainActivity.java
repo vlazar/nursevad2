@@ -69,8 +69,8 @@ public class MainActivity extends AppCompatActivity {
 
         EventRepository.getInstance().getLiveEvents().observe(this, events -> {
             adapter.submitList(events);
-            // Auto-scroll to top when new event is added
-            recyclerView.smoothScrollToPosition(0);
+            // Instant scroll to top to ensure new item is visible immediately
+            recyclerView.scrollToPosition(0);
         });
 
         btnStartStop.setOnClickListener(v -> {
@@ -102,7 +102,6 @@ public class MainActivity extends AppCompatActivity {
         EventBus.getInstance().getVolume().observe(this, vol -> volumeMeter.setProgress(vol));
         EventBus.getInstance().getDebug().observe(this, msg -> tvDebug.setText(msg));
         
-        // Observe playback state to update the adapter's play/pause icons
         EventBus.getInstance().getPlayingUri().observe(this, uri -> adapter.setPlayingUri(uri));
     }
 
