@@ -32,7 +32,8 @@ public class VadService extends Service {
     private boolean isProcessingResponse = false;
     
     private long speechStartMs = 0;
-    private double accumulatedDb = 0;
+    // FIX: Accumulate linear RMS instead of logarithmic dB
+    private double accumulatedRms = 0; 
     private int frameCount = 0;
     private int silenceFrames = 0;
 
@@ -126,7 +127,6 @@ public class VadService extends Service {
         return START_STICKY;
     }
 
-    // Ensures the mic turns off if the user swipes the app away from recent apps
     @Override
     public void onTaskRemoved(Intent rootIntent) {
         super.onTaskRemoved(rootIntent);
@@ -160,13 +160,17 @@ public class VadService extends Service {
     private void processAudio(short[] chunk) {
         double sum = 0;
         for (short s : chunk) sum += s * s;
-        double rms = Math.sqrt(sum / chunk.length);
-        double db = 20 * Math.log10(rms / 32768.0);
+        double meanSquare = sum / chunk.length;
+        double rms = Math.sqrt(meanSquare);
         
-        // Perceptual Loudness Curve (Power of 1.5)
-        double normalizedDb = (db + 50.0) / 50.0;
+        // Protect against Math.log10(0) which results in -Infinity
+        double safeRms = Math.max(1.0, rms);
+        double db = 20 * Math.log10(safeRms / 32768.0);
+        
+        // Linear Perceptual Mapping: -55 dB (0%) to -5 dB (100%)
+        double normalizedDb = (db + 55.0) / 50.0;
         normalizedDb = Math.max(0.0, Math.min(1.0, normalizedDb));
-        int percent = (int) Math.round(100.0 * Math.pow(normalizedDb, 1.5));
+        int percent = (int) Math.round(normalizedDb * 100.0);
         percent = Math.max(0, Math.min(100, percent));
         
         EventBus.getInstance().postVolume(percent);
@@ -180,7 +184,7 @@ public class VadService extends Service {
             isSpeaking = true;
             speechEnded = false;
             speechStartMs = SystemClock.elapsedRealtime();
-            accumulatedDb = 0; frameCount = 0; silenceFrames = 0;
+            accumulatedRms = 0; frameCount = 0; silenceFrames = 0;
             
             try {
                 recordedFile = new File(getCacheDir(), "speech_" + speechStartMs + ".wav");
@@ -211,7 +215,8 @@ public class VadService extends Service {
                 try { fos.write(byteBuffer); } catch (IOException e) {}
             }
 
-            accumulatedDb += db;
+            // FIX: Accumulate linear RMS, not logarithmic dB
+            accumulatedRms += rms;
             frameCount++;
             if (prob < 0.4) silenceFrames++;
             else silenceFrames = 0;
@@ -250,12 +255,15 @@ public class VadService extends Service {
         int thresholdSec = SettingsManager.getDurationThreshold(this);
         
         if (durationMs >= thresholdSec * 1000) {
-            double avgDb = accumulatedDb / frameCount;
+            // FIX: Calculate average linear RMS first, then convert to dB
+            double avgRms = accumulatedRms / frameCount;
+            double safeAvgRms = Math.max(1.0, avgRms);
+            double avgDb = 20 * Math.log10(safeAvgRms / 32768.0);
             
-            // Perceptual Loudness Curve (Power of 1.5)
-            double normalizedAvgDb = (avgDb + 50.0) / 50.0;
+            // Linear Perceptual Mapping: -55 dB (0%) to -5 dB (100%)
+            double normalizedAvgDb = (avgDb + 55.0) / 50.0;
             normalizedAvgDb = Math.max(0.0, Math.min(1.0, normalizedAvgDb));
-            int avgPercent = (int) Math.round(100.0 * Math.pow(normalizedAvgDb, 1.5));
+            int avgPercent = (int) Math.round(normalizedAvgDb * 100.0);
             avgPercent = Math.max(0, Math.min(100, avgPercent));
             
             int level = getLevel(avgPercent);
