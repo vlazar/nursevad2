@@ -10,15 +10,15 @@ import com.pengrad.telegrambot.model.Update;
 import com.pengrad.telegrambot.request.EditMessageText;
 import com.pengrad.telegrambot.request.SendAudio;
 import com.pengrad.telegrambot.request.SendMessage;
+import com.pengrad.telegrambot.request.AnswerCallbackQuery;
 import com.pengrad.telegrambot.response.SendResponse;
-import com.pengrad.telegrambot.callback.Callback;
+import com.pengrad.telegrambot.Callback;
 import com.pengrad.telegrambot.model.request.InlineKeyboardButton;
 import com.pengrad.telegrambot.model.request.InlineKeyboardMarkup;
+import com.pengrad.telegrambot.model.request.ParseMode;
+
 import java.io.File;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashSet;
-import java.util.List;
+import java.io.IOException;
 import java.util.Set;
 
 public class TelegramManager {
@@ -65,7 +65,7 @@ public class TelegramManager {
 
     public void stop() {
         if (bot != null) {
-            bot.removeUpdatesListener();
+            // shutdown() stops the internal executor and networking threads
             bot.shutdown();
             bot = null;
         }
@@ -97,7 +97,8 @@ public class TelegramManager {
             VadService.stopService(appContext);
             editMessage(chatId, messageId, "🛑 VAD Service Stopped.");
         } else if (data.equals("status")) {
-            String state = VadService.isListening ? "Listening..." : "Idle";
+            // Updated to use the static flag from VadService
+            String state = VadService.isVadListening ? "Listening..." : "Idle";
             editMessage(chatId, messageId, "📊 Current State: " + state);
         } else if (data.equals("settings")) {
             sendSettingsMenu(chatId, messageId);
@@ -123,12 +124,13 @@ public class TelegramManager {
         }
         
         // Answer callback to remove loading spinner on button
-        bot.execute(new com.pengrad.telegrambot.request.AnswerCallbackQuery(callback.id()));
+        bot.execute(new AnswerCallbackQuery(callback.id()));
     }
 
     private void handleThresholdCallback(String data) {
         // data format: thresh_{level}_{inc/dec}
         String[] parts = data.split("_");
+        if (parts.length < 3) return;
         int level = Integer.parseInt(parts[1]) - 1; // 0-indexed
         boolean inc = parts[2].equals("inc");
         
@@ -136,12 +138,12 @@ public class TelegramManager {
         if (inc && thresholds[level] < 100) thresholds[level] += 5;
         if (!inc && thresholds[level] > 0) thresholds[level] -= 5;
         
-        // Ensure thresholds remain somewhat ordered (optional, but good UX)
         SettingsManager.saveThresholds(appContext, thresholds);
     }
 
     private void sendMainMenu(long chatId, int replyToId) {
-        String state = VadService.isListening ? "🟢 Listening..." : "⚪ Idle";
+        // Updated to use the static flag from VadService
+        String state = VadService.isVadListening ? "🟢 Listening..." : "⚪ Idle";
         String text = "*Nurse VAD Control Panel*\nState: " + state;
         
         InlineKeyboardMarkup markup = new InlineKeyboardMarkup(
@@ -157,7 +159,8 @@ public class TelegramManager {
                 }
         );
 
-        SendMessage msg = new SendMessage(chatId, text).parseMode("Markdown").replyMarkup(markup);
+        // Fixed ParseMode enum usage
+        SendMessage msg = new SendMessage(chatId, text).parseMode(ParseMode.Markdown).replyMarkup(markup);
         if (replyToId > 0) msg.replyToMessageId(replyToId);
         bot.execute(msg);
     }
@@ -190,13 +193,13 @@ public class TelegramManager {
         );
 
         EditMessageText edit = new EditMessageText(chatId, messageId, text)
-                .parseMode("Markdown")
+                .parseMode(ParseMode.Markdown)
                 .replyMarkup(markup);
         bot.execute(edit);
     }
 
     private void editMessage(long chatId, int messageId, String text) {
-        bot.execute(new EditMessageText(chatId, messageId, text).parseMode("Markdown"));
+        bot.execute(new EditMessageText(chatId, messageId, text).parseMode(ParseMode.Markdown));
     }
 
     public void sendAudioEvent(String wavUri, int level) {
@@ -213,6 +216,7 @@ public class TelegramManager {
                         .caption("🗣 Speech Event Detected (Level " + level + ")")
                         .title("Nurse VAD Recording");
                 
+                // Fixed Callback import and IOException signature
                 bot.execute(sendAudio, new Callback<SendAudio, SendResponse>() {
                     @Override
                     public void onResponse(SendAudio request, SendResponse response) {
@@ -221,7 +225,7 @@ public class TelegramManager {
                         }
                     }
                     @Override
-                    public void onFailure(SendAudio request, Exception e) {
+                    public void onFailure(SendAudio request, IOException e) {
                         Log.e("TelegramManager", "Network error sending audio", e);
                     }
                 });
