@@ -52,10 +52,8 @@ public class TelegramManager {
                 for (Update update : updates) {
                     try {
                         if (update.message() != null) {
-                            // FIX: Removed 'allowedIds' parameter, it will now fetch dynamically
                             handleMessage(update.message());
                         } else if (update.callbackQuery() != null) {
-                            // FIX: Removed 'allowedIds' parameter, it will now fetch dynamically
                             handleCallback(update.callbackQuery());
                         }
                     } catch (Exception ex) {
@@ -88,19 +86,13 @@ public class TelegramManager {
     }
 
     private void handleMessage(Message message) {
-        // FIX: Fetch allowed IDs dynamically on every message
         Set<Long> allowedIds = SettingsManager.getAllowedUserIds(appContext);
-        
-        // Safety check: message.from() can be null for channel posts or anonymous admins
         if (message.from() == null || !isAuthorized(message.from().id(), allowedIds)) return;
-        
         sendMainMenu(message.chat().id(), message.messageId());
     }
 
     private void handleCallback(CallbackQuery callback) {
-        // FIX: Fetch allowed IDs dynamically on every button click
         Set<Long> allowedIds = SettingsManager.getAllowedUserIds(appContext);
-        
         if (callback.from() == null || !isAuthorized(callback.from().id(), allowedIds)) return;
         
         long chatId = callback.message().chat().id();
@@ -109,10 +101,10 @@ public class TelegramManager {
 
         if (data.equals("start_vad")) {
             VadService.startService(appContext);
-            editMessage(chatId, messageId, "✅ VAD Service Started.");
+            editMessage(chatId, messageId, "🟩 Start\n🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩");
         } else if (data.equals("stop_vad")) {
             VadService.stopService(appContext);
-            editMessage(chatId, messageId, "🛑 VAD Service Stopped.");
+            editMessage(chatId, messageId, "🟥 Stop\n🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥");
         } else if (data.equals("status")) {
             String state = VadService.isVadListening ? "Listening..." : "Idle";
             editMessage(chatId, messageId, "📊 Current State: " + state);
@@ -201,6 +193,31 @@ public class TelegramManager {
                     new InlineKeyboardButton("Ignore: " + dur + "s").callbackData("noop"),
                     new InlineKeyboardButton("+1s").callbackData("dur_inc")
                 },
+                new InlineKeyboardButton[]{
+                    new InlineKeyboardButton("-5").callbackData("thresh_1_dec"),
+                    new InlineKeyboardButton("Level 1: " + thresh[0]).callbackData("noop"),
+                    new InlineKeyboardButton("+5").callbackData("thresh_1_inc")
+                },
+                new InlineKeyboardButton[]{
+                    new InlineKeyboardButton("-5").callbackData("thresh_2_dec"),
+                    new InlineKeyboardButton("Level 2: " + thresh[1]).callbackData("noop"),
+                    new InlineKeyboardButton("+5").callbackData("thresh_2_inc")
+                },
+                new InlineKeyboardButton[]{
+                    new InlineKeyboardButton("-5").callbackData("thresh_3_dec"),
+                    new InlineKeyboardButton("Level 3: " + thresh[2]).callbackData("noop"),
+                    new InlineKeyboardButton("+5").callbackData("thresh_3_inc")
+                },
+                new InlineKeyboardButton[]{
+                    new InlineKeyboardButton("-5").callbackData("thresh_4_dec"),
+                    new InlineKeyboardButton("Level 4: " + thresh[3]).callbackData("noop"),
+                    new InlineKeyboardButton("+5").callbackData("thresh_4_inc")
+                },
+                new InlineKeyboardButton[]{
+                    new InlineKeyboardButton("-5").callbackData("thresh_5_dec"),
+                    new InlineKeyboardButton("Level 5: " + thresh[4]).callbackData("noop"),
+                    new InlineKeyboardButton("+5").callbackData("thresh_5_inc")
+                },
                 new InlineKeyboardButton[]{ new InlineKeyboardButton("🔙 Back").callbackData("back_main") }
         );
 
@@ -214,7 +231,7 @@ public class TelegramManager {
         bot.execute(new EditMessageText(chatId, messageId, text).parseMode(ParseMode.Markdown));
     }
 
-    public void sendAudioEvent(String wavUri, int level) {
+    public void sendAudioEvent(String wavUri, int level, String responseFileName) {
         if (!isRunning || bot == null) return;
         Set<Long> allowedIds = SettingsManager.getAllowedUserIds(appContext);
         if (allowedIds.isEmpty()) return;
@@ -223,9 +240,16 @@ public class TelegramManager {
             File file = new File(wavUri.replace("file://", ""));
             if (!file.exists()) return;
 
+            String emoji = "🟢";
+            if (level == 3) emoji = "🌕";
+            else if (level == 4) emoji = "🟠";
+            else if (level == 5) emoji = "🔴";
+
+            String caption = emoji + " " + (responseFileName != null ? responseFileName : "No response");
+
             for (Long chatId : allowedIds) {
                 SendAudio sendAudio = new SendAudio(chatId, file)
-                        .caption("🗣 Speech Event Detected (Level " + level + ")")
+                        .caption(caption)
                         .title("Nurse VAD Recording");
                 
                 bot.execute(sendAudio, new Callback<SendAudio, SendResponse>() {

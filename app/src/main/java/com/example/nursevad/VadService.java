@@ -306,7 +306,8 @@ public class VadService extends Service {
         
         // Send to Telegram Bot
         if (recordedFile != null && recordedFile.exists()) {
-            TelegramManager.getInstance().sendAudioEvent(Uri.fromFile(recordedFile).toString(), level);
+            String responseName = (file != null) ? file.displayName : null;
+            TelegramManager.getInstance().sendAudioEvent(Uri.fromFile(recordedFile).toString(), level, responseName);
         }
         
         if (file != null) {
