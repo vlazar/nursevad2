@@ -37,9 +37,9 @@ public class TelegramManager {
         appContext = context.getApplicationContext();
         
         String token = SettingsManager.getBotToken(appContext);
-        Set<Long> allowedIds = SettingsManager.getAllowedUserIds(appContext);
+        Set<Long> initialIds = SettingsManager.getAllowedUserIds(appContext);
         
-        if (token == null || token.isEmpty() || allowedIds.isEmpty()) {
+        if (token == null || token.isEmpty() || initialIds.isEmpty()) {
             Log.d("TelegramManager", "Bot not started: Missing token or user IDs.");
             return;
         }
@@ -52,9 +52,11 @@ public class TelegramManager {
                 for (Update update : updates) {
                     try {
                         if (update.message() != null) {
-                            handleMessage(update.message(), allowedIds);
+                            // FIX: Removed 'allowedIds' parameter, it will now fetch dynamically
+                            handleMessage(update.message());
                         } else if (update.callbackQuery() != null) {
-                            handleCallback(update.callbackQuery(), allowedIds);
+                            // FIX: Removed 'allowedIds' parameter, it will now fetch dynamically
+                            handleCallback(update.callbackQuery());
                         }
                     } catch (Exception ex) {
                         Log.e("TelegramManager", "Error processing update", ex);
@@ -62,8 +64,6 @@ public class TelegramManager {
                 }
                 return UpdatesListener.CONFIRMED_UPDATES_ALL;
             }, e -> {
-                // This catches network errors (e.g., invalid token, no internet) 
-                // and prevents the background thread from crashing the app!
                 Log.e("TelegramManager", "Telegram Bot Error: " + e.getMessage());
             });
             
@@ -87,13 +87,21 @@ public class TelegramManager {
         return allowedIds.contains(userId);
     }
 
-    private void handleMessage(Message message, Set<Long> allowedIds) {
-        if (!isAuthorized(message.from().id(), allowedIds)) return;
+    private void handleMessage(Message message) {
+        // FIX: Fetch allowed IDs dynamically on every message
+        Set<Long> allowedIds = SettingsManager.getAllowedUserIds(appContext);
+        
+        // Safety check: message.from() can be null for channel posts or anonymous admins
+        if (message.from() == null || !isAuthorized(message.from().id(), allowedIds)) return;
+        
         sendMainMenu(message.chat().id(), message.messageId());
     }
 
-    private void handleCallback(CallbackQuery callback, Set<Long> allowedIds) {
-        if (!isAuthorized(callback.from().id(), allowedIds)) return;
+    private void handleCallback(CallbackQuery callback) {
+        // FIX: Fetch allowed IDs dynamically on every button click
+        Set<Long> allowedIds = SettingsManager.getAllowedUserIds(appContext);
+        
+        if (callback.from() == null || !isAuthorized(callback.from().id(), allowedIds)) return;
         
         long chatId = callback.message().chat().id();
         int messageId = callback.message().messageId();
