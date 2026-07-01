@@ -56,19 +56,15 @@ public class TelegramManager {
                         } else if (update.callbackQuery() != null) {
                             handleCallback(update.callbackQuery(), allowedIds);
                         }
-                    } catch (Exception e) {
-                        Log.e("TelegramManager", "Error processing update", e);
+                    } catch (Exception ex) {
+                        Log.e("TelegramManager", "Error processing update", ex);
                     }
                 }
                 return UpdatesListener.CONFIRMED_UPDATES_ALL;
             }, e -> {
                 // This catches network errors (e.g., invalid token, no internet) 
                 // and prevents the background thread from crashing the app!
-                Log.e("TelegramManager", "Telegram Bot Network Error: " + e.getMessage());
-                
-                if (e instanceof com.pengrad.telegrambot.exception.BotApiException) {
-                    Log.e("TelegramManager", "Invalid Bot Token or API error.");
-                }
+                Log.e("TelegramManager", "Telegram Bot Error: " + e.getMessage());
             });
             
         } catch (Throwable t) {
@@ -79,7 +75,6 @@ public class TelegramManager {
 
     public void stop() {
         if (bot != null) {
-            // shutdown() stops the internal executor and networking threads
             bot.shutdown();
             bot = null;
         }
@@ -111,7 +106,6 @@ public class TelegramManager {
             VadService.stopService(appContext);
             editMessage(chatId, messageId, "🛑 VAD Service Stopped.");
         } else if (data.equals("status")) {
-            // Updated to use the static flag from VadService
             String state = VadService.isVadListening ? "Listening..." : "Idle";
             editMessage(chatId, messageId, "📊 Current State: " + state);
         } else if (data.equals("settings")) {
@@ -137,15 +131,13 @@ public class TelegramManager {
             sendSettingsMenu(chatId, messageId);
         }
         
-        // Answer callback to remove loading spinner on button
         bot.execute(new AnswerCallbackQuery(callback.id()));
     }
 
     private void handleThresholdCallback(String data) {
-        // data format: thresh_{level}_{inc/dec}
         String[] parts = data.split("_");
         if (parts.length < 3) return;
-        int level = Integer.parseInt(parts[1]) - 1; // 0-indexed
+        int level = Integer.parseInt(parts[1]) - 1; 
         boolean inc = parts[2].equals("inc");
         
         int[] thresholds = SettingsManager.getThresholds(appContext);
@@ -156,7 +148,6 @@ public class TelegramManager {
     }
 
     private void sendMainMenu(long chatId, int replyToId) {
-        // Updated to use the static flag from VadService
         String state = VadService.isVadListening ? "🟢 Listening..." : "⚪ Idle";
         String text = "*Nurse VAD Control Panel*\nState: " + state;
         
@@ -173,7 +164,6 @@ public class TelegramManager {
                 }
         );
 
-        // Fixed ParseMode enum usage
         SendMessage msg = new SendMessage(chatId, text).parseMode(ParseMode.Markdown).replyMarkup(markup);
         if (replyToId > 0) msg.replyToMessageId(replyToId);
         bot.execute(msg);
@@ -230,7 +220,6 @@ public class TelegramManager {
                         .caption("🗣 Speech Event Detected (Level " + level + ")")
                         .title("Nurse VAD Recording");
                 
-                // Fixed Callback import and IOException signature
                 bot.execute(sendAudio, new Callback<SendAudio, SendResponse>() {
                     @Override
                     public void onResponse(SendAudio request, SendResponse response) {
