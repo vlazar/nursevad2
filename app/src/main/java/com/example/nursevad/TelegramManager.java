@@ -44,23 +44,37 @@ public class TelegramManager {
             return;
         }
 
-        bot = new TelegramBot(token);
-        isRunning = true;
+        try {
+            bot = new TelegramBot(token);
+            isRunning = true;
 
-        bot.setUpdatesListener(updates -> {
-            for (Update update : updates) {
-                try {
-                    if (update.message() != null) {
-                        handleMessage(update.message(), allowedIds);
-                    } else if (update.callbackQuery() != null) {
-                        handleCallback(update.callbackQuery(), allowedIds);
+            bot.setUpdatesListener(updates -> {
+                for (Update update : updates) {
+                    try {
+                        if (update.message() != null) {
+                            handleMessage(update.message(), allowedIds);
+                        } else if (update.callbackQuery() != null) {
+                            handleCallback(update.callbackQuery(), allowedIds);
+                        }
+                    } catch (Exception e) {
+                        Log.e("TelegramManager", "Error processing update", e);
                     }
-                } catch (Exception e) {
-                    Log.e("TelegramManager", "Error processing update", e);
                 }
-            }
-            return UpdatesListener.CONFIRMED_UPDATES_ALL;
-        });
+                return UpdatesListener.CONFIRMED_UPDATES_ALL;
+            }, e -> {
+                // This catches network errors (e.g., invalid token, no internet) 
+                // and prevents the background thread from crashing the app!
+                Log.e("TelegramManager", "Telegram Bot Network Error: " + e.getMessage());
+                
+                if (e instanceof com.pengrad.telegrambot.exception.BotApiException) {
+                    Log.e("TelegramManager", "Invalid Bot Token or API error.");
+                }
+            });
+            
+        } catch (Throwable t) {
+            Log.e("TelegramManager", "Fatal error starting Telegram Bot", t);
+            isRunning = false;
+        }
     }
 
     public void stop() {
