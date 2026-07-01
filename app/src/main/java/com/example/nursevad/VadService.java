@@ -1,6 +1,7 @@
 package com.example.nursevad;
 
 import android.app.*;
+import android.content.Context;
 import android.content.Intent;
 import android.media.AudioFormat;
 import android.media.AudioRecord;
@@ -9,6 +10,7 @@ import android.media.MediaRecorder;
 import android.net.Uri;
 import android.os.*;
 import androidx.core.app.NotificationCompat;
+import androidx.core.content.ContextCompat;
 import androidx.documentfile.provider.DocumentFile;
 import java.io.File;
 import java.io.FileOutputStream;
@@ -22,6 +24,10 @@ public class VadService extends Service {
     private AudioRecord audioRecord;
     private Thread recordingThread;
     private boolean isRunning = false;
+    
+    // Public static flag for TelegramManager to read the current VAD state
+    public static boolean isVadListening = false; 
+    
     private boolean isPaused = false;
     private PowerManager.WakeLock wakeLock;
     private SileroVad vad;
@@ -44,6 +50,17 @@ public class VadService extends Service {
     private Map<Integer, String> lastPlayed = new HashMap<>();
 
     private Handler handler = new Handler(Looper.getMainLooper());
+
+    public static void startService(Context context) {
+        Intent i = new Intent(context, VadService.class);
+        ContextCompat.startForegroundService(context, i);
+    }
+
+    public static void stopService(Context context) {
+        Intent i = new Intent(context, VadService.class);
+        i.setAction("STOP");
+        context.startService(i);
+    }
 
     @Override
     public void onCreate() {
@@ -119,6 +136,7 @@ public class VadService extends Service {
 
         if (!isRunning) {
             isRunning = true;
+            isVadListening = true; // Update static flag for Telegram
             if (wakeLock != null && !wakeLock.isHeld()) wakeLock.acquire();
             
             if (vad == null) {
@@ -258,13 +276,11 @@ public class VadService extends Service {
         long durationMs = SystemClock.elapsedRealtime() - speechStartMs;
         int thresholdSec = SettingsManager.getDurationThreshold(this);
         
-        // FIX: If the speech hasn't reached the minimum duration threshold yet, wait and check again
         if (durationMs < thresholdSec * 1000) {
             if (isSpeaking) {
                 handler.postDelayed(() -> triggerResponse(), 100);
                 return;
             } else {
-                // Speech ended before reaching the minimum duration -> Ignore
                 EventBus.getInstance().postStatus("Listening...");
                 isProcessingResponse = false;
                 return;
@@ -287,6 +303,11 @@ public class VadService extends Service {
         
         LogEvent event = new LogEvent(LogEvent.Type.SPEECH, level, file, recordedUri);
         EventRepository.getInstance().addEvent(event);
+        
+        // Send to Telegram Bot
+        if (recordedFile != null && recordedFile.exists()) {
+            TelegramManager.getInstance().sendAudioEvent(Uri.fromFile(recordedFile).toString(), level);
+        }
         
         if (file != null) {
             triggerPlay(file);
@@ -474,6 +495,7 @@ public class VadService extends Service {
     @Override
     public void onDestroy() {
         isRunning = false;
+        isVadListening = false; // Update static flag for Telegram
         handler.removeCallbacksAndMessages(null);
         if (fos != null) { try { fos.close(); } catch (IOException e) {} }
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();

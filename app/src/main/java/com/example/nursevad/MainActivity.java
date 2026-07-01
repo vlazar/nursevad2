@@ -17,6 +17,7 @@ import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
+import java.util.Set;
 
 public class MainActivity extends AppCompatActivity {
     private boolean isListening = false;
@@ -32,7 +33,6 @@ public class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        // Restore state after orientation change
         if (savedInstanceState != null) {
             isListening = savedInstanceState.getBoolean("isListening", false);
         }
@@ -46,6 +46,8 @@ public class MainActivity extends AppCompatActivity {
             }
         }
 
+        startTelegramServiceIfConfigured();
+
         statusText = findViewById(R.id.statusText);
         tvDebug = findViewById(R.id.tvDebug);
         volumeMeter = findViewById(R.id.volumeMeter);
@@ -53,7 +55,6 @@ public class MainActivity extends AppCompatActivity {
         ImageButton btnClear = findViewById(R.id.btnClear);
         recyclerView = findViewById(R.id.recyclerView);
 
-        // Apply restored state to UI
         if (isListening) {
             btnStartStop.setText("Stop");
         } else {
@@ -117,6 +118,19 @@ public class MainActivity extends AppCompatActivity {
         EventBus.getInstance().getPlayingUri().observe(this, uri -> adapter.setPlayingUri(uri));
     }
 
+    private void startTelegramServiceIfConfigured() {
+        String token = SettingsManager.getBotToken(this);
+        Set<Long> ids = SettingsManager.getAllowedUserIds(this);
+        
+        Intent i = new Intent(this, TelegramService.class);
+        if (token != null && !token.isEmpty() && !ids.isEmpty()) {
+            ContextCompat.startForegroundService(this, i);
+        } else {
+            i.setAction("STOP");
+            startService(i);
+        }
+    }
+
     @Override
     protected void onSaveInstanceState(Bundle outState) {
         super.onSaveInstanceState(outState);
@@ -126,7 +140,6 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        // If the user is exiting the app (not just rotating screen), stop the service
         if (!isChangingConfigurations() && isListening) {
             Intent i = new Intent(this, VadService.class);
             i.setAction("STOP");

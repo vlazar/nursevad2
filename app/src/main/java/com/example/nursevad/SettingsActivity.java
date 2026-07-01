@@ -11,7 +11,10 @@ import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.SwitchCompat;
+import androidx.core.content.ContextCompat;
 import androidx.documentfile.provider.DocumentFile;
+import com.google.android.material.textfield.TextInputEditText;
+import java.util.Set;
 
 public class SettingsActivity extends AppCompatActivity {
     private SeekBar[] sbThresholds = new SeekBar[5];
@@ -23,6 +26,9 @@ public class SettingsActivity extends AppCompatActivity {
     private SeekBar sbDelay;
     private TextView tvDelay;
     private SwitchCompat switchWaitForEnd;
+    
+    private TextInputEditText etBotToken;
+    private TextInputEditText etUserIds;
     
     private String selectedFolderUri;
     private String selectedFolderName;
@@ -51,6 +57,7 @@ public class SettingsActivity extends AppCompatActivity {
         initDelay();
         initWaitForEnd();
         initFolderPicker();
+        initTelegramSettings();
         initSaveButton();
         loadSettings();
     }
@@ -102,6 +109,11 @@ public class SettingsActivity extends AppCompatActivity {
         btnSelectFolder.setOnClickListener(v -> folderPickerLauncher.launch(null));
     }
 
+    private void initTelegramSettings() {
+        etBotToken = findViewById(R.id.etBotToken);
+        etUserIds = findViewById(R.id.etUserIds);
+    }
+
     private void initSaveButton() {
         Button btnSave = findViewById(R.id.btnSave);
         btnSave.setOnClickListener(v -> {
@@ -114,6 +126,21 @@ public class SettingsActivity extends AppCompatActivity {
             SettingsManager.saveWaitForEnd(this, switchWaitForEnd.isChecked());
             
             if (selectedFolderUri != null) SettingsManager.saveFolder(this, selectedFolderUri, selectedFolderName);
+            
+            String token = etBotToken.getText() != null ? etBotToken.getText().toString().trim() : "";
+            String idsStr = etUserIds.getText() != null ? etUserIds.getText().toString().trim() : "";
+            
+            SettingsManager.saveBotToken(this, token);
+            SettingsManager.saveAllowedUserIds(this, idsStr);
+            
+            // Restart Telegram Service logic
+            Intent tgIntent = new Intent(this, TelegramService.class);
+            if (!token.isEmpty() && !idsStr.isEmpty()) {
+                ContextCompat.startForegroundService(this, tgIntent);
+            } else {
+                tgIntent.setAction("STOP");
+                startService(tgIntent);
+            }
             
             Toast.makeText(this, "Settings Saved", Toast.LENGTH_SHORT).show();
             finish();
@@ -140,5 +167,14 @@ public class SettingsActivity extends AppCompatActivity {
         selectedFolderUri = SettingsManager.getFolderUri(this);
         selectedFolderName = folderName;
         tvFolderName.setText(folderName != null ? folderName : "No folder selected");
+        
+        etBotToken.setText(SettingsManager.getBotToken(this));
+        Set<Long> ids = SettingsManager.getAllowedUserIds(this);
+        StringBuilder sb = new StringBuilder();
+        for (Long id : ids) {
+            if (sb.length() > 0) sb.append(", ");
+            sb.append(id);
+        }
+        etUserIds.setText(sb.toString());
     }
 }
