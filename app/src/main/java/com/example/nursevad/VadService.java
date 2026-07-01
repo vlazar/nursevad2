@@ -182,7 +182,6 @@ public class VadService extends Service {
         float prob = 0;
         if (vad != null) prob = vad.predict(chunk);
         
-        // Format dynamically to handle locale-specific commas/periods if needed, but fallback to string replacement to guarantee match
         String probStr = String.format("%.3f", prob).replace('.', ',');
         EventBus.getInstance().postDebug("Vol: " + percent + "% | VAD Prob: " + probStr);
 
@@ -259,32 +258,40 @@ public class VadService extends Service {
         long durationMs = SystemClock.elapsedRealtime() - speechStartMs;
         int thresholdSec = SettingsManager.getDurationThreshold(this);
         
-        if (durationMs >= thresholdSec * 1000) {
-            double avgRms = accumulatedRms / frameCount;
-            double safeAvgRms = Math.max(1.0, avgRms);
-            double avgDb = 20 * Math.log10(safeAvgRms / 32768.0);
-            
-            double normalizedAvgDb = (avgDb + 55.0) / 50.0;
-            normalizedAvgDb = Math.max(0.0, Math.min(1.0, normalizedAvgDb));
-            int avgPercent = (int) Math.round(normalizedAvgDb * 100.0);
-            avgPercent = Math.max(0, Math.min(100, avgPercent));
-            
-            int level = getLevel(avgPercent);
-            
-            AudioFile file = pickFile(level);
-            String recordedUri = (recordedFile != null) ? Uri.fromFile(recordedFile).toString() : null;
-            
-            LogEvent event = new LogEvent(LogEvent.Type.SPEECH, level, file, recordedUri);
-            EventRepository.getInstance().addEvent(event);
-            
-            if (file != null) {
-                triggerPlay(file);
+        // FIX: If the speech hasn't reached the minimum duration threshold yet, wait and check again
+        if (durationMs < thresholdSec * 1000) {
+            if (isSpeaking) {
+                handler.postDelayed(() -> triggerResponse(), 100);
+                return;
             } else {
-                EventBus.getInstance().postStatus("Listening... (No files in Level " + level + ")");
+                // Speech ended before reaching the minimum duration -> Ignore
+                EventBus.getInstance().postStatus("Listening...");
                 isProcessingResponse = false;
+                return;
             }
+        }
+        
+        double avgRms = accumulatedRms / frameCount;
+        double safeAvgRms = Math.max(1.0, avgRms);
+        double avgDb = 20 * Math.log10(safeAvgRms / 32768.0);
+        
+        double normalizedAvgDb = (avgDb + 55.0) / 50.0;
+        normalizedAvgDb = Math.max(0.0, Math.min(1.0, normalizedAvgDb));
+        int avgPercent = (int) Math.round(normalizedAvgDb * 100.0);
+        avgPercent = Math.max(0, Math.min(100, avgPercent));
+        
+        int level = getLevel(avgPercent);
+        
+        AudioFile file = pickFile(level);
+        String recordedUri = (recordedFile != null) ? Uri.fromFile(recordedFile).toString() : null;
+        
+        LogEvent event = new LogEvent(LogEvent.Type.SPEECH, level, file, recordedUri);
+        EventRepository.getInstance().addEvent(event);
+        
+        if (file != null) {
+            triggerPlay(file);
         } else {
-            EventBus.getInstance().postStatus("Listening...");
+            EventBus.getInstance().postStatus("Listening... (No files in Level " + level + ")");
             isProcessingResponse = false;
         }
     }
@@ -302,7 +309,6 @@ public class VadService extends Service {
         if (file == null) return;
         isPaused = true;
         
-        // Reset UI indicators during playback
         EventBus.getInstance().postVolume(0);
         EventBus.getInstance().postDebug("Vol: 0% | VAD Prob: 0,000");
         
@@ -334,7 +340,6 @@ public class VadService extends Service {
     public void playSpecificFile(String uriString) {
         isPaused = true;
         
-        // Reset UI indicators during playback
         EventBus.getInstance().postVolume(0);
         EventBus.getInstance().postDebug("Vol: 0% | VAD Prob: 0,000");
         

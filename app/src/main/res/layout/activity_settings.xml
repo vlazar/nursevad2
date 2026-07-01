@@ -11,7 +11,6 @@
 
         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Loudness Thresholds" android:textSize="18sp" android:textStyle="bold" android:layout_marginBottom="8dp" />
 
-        <!-- Level 1 to 5 (Repeated for brevity, ensure width is 64dp) -->
         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginTop="12dp">
             <TextView android:id="@+id/tvThreshold1" android:layout_width="64dp" android:layout_height="wrap_content" android:text="20%" />
             <SeekBar android:id="@+id/sbThreshold1" android:layout_width="match_parent" android:layout_height="wrap_content" />
@@ -37,15 +36,14 @@
         <TextView android:id="@+id/tvDuration" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="shorter than 2 seconds" android:layout_marginBottom="8dp" />
         <SeekBar android:id="@+id/sbDuration" android:layout_width="match_parent" android:layout_height="wrap_content" />
 
-        <!-- NEW: Delay Response -->
-        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Delay response" android:textSize="18sp" android:textStyle="bold" android:layout_marginTop="24dp" android:layout_marginBottom="8dp" />
+        <!-- Updated Label -->
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Delay Response" android:textSize="18sp" android:textStyle="bold" android:layout_marginTop="24dp" android:layout_marginBottom="8dp" />
         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical">
             <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="for " />
             <TextView android:id="@+id/tvDelay" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="0 seconds" />
         </LinearLayout>
         <SeekBar android:id="@+id/sbDelay" android:layout_width="match_parent" android:layout_height="wrap_content" android:max="10" android:layout_marginBottom="16dp"/>
 
-        <!-- NEW: Wait For Speech To End -->
         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Wait For Speech To End" android:textSize="18sp" android:textStyle="bold" android:layout_marginBottom="8dp" />
         <androidx.appcompat.widget.SwitchCompat 
             android:id="@+id/switchWaitForEnd" 
