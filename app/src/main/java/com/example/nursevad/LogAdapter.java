@@ -83,6 +83,7 @@ public class LogAdapter extends ListAdapter<LogEvent, LogAdapter.ViewHolder> {
                 int color = getColorForLevel(event.level);
                 swatch.setBackgroundColor(color);
                 swatch.setImageResource(0); 
+                swatch.setAlpha(1.0f);
                 
                 tvTitle.setText(time + " - Level " + event.level);
                 tvTitle.setTextColor(Color.BLACK);
@@ -90,7 +91,7 @@ public class LogAdapter extends ListAdapter<LogEvent, LogAdapter.ViewHolder> {
                 itemView.setBackgroundColor(Color.TRANSPARENT);
                 
                 if (event.displayName != null && !event.displayName.isEmpty()) {
-                    tvPlayed.setText(event.displayName);
+                    tvPlayed.setText(event.displayName); // Removed "Played: " prefix
                     tvPlayed.setVisibility(View.VISIBLE);
                 } else {
                     tvPlayed.setVisibility(View.GONE);
@@ -106,7 +107,6 @@ public class LogAdapter extends ListAdapter<LogEvent, LogAdapter.ViewHolder> {
                     btnPlay.setColorFilter(Color.parseColor("#9E9E9E")); 
                 }
                 
-                // Play button is VISIBLE for speech events
                 btnPlay.setVisibility(View.VISIBLE);
                 btnPlay.setOnClickListener(v -> {
                     if (listener != null && event.recordedSpeechUri != null) {
@@ -119,20 +119,20 @@ public class LogAdapter extends ListAdapter<LogEvent, LogAdapter.ViewHolder> {
                 });
 
             } else {
-                // START or STOP events
-                // Use INVISIBLE (not GONE) so the 40dp space stays occupied
-                btnPlay.setVisibility(View.INVISIBLE);
-                btnPlay.setOnClickListener(null);
+                btnPlay.setVisibility(View.GONE);
                 tvPlayed.setVisibility(View.GONE);
+                swatch.setBackgroundColor(Color.TRANSPARENT);
                 
                 if (event.type == LogEvent.Type.START) {
-                    swatch.setBackgroundColor(Color.parseColor("#4CAF50")); // Green swatch
+                    swatch.setImageResource(R.drawable.ic_play);
+                    swatch.setColorFilter(Color.GRAY); 
                     tvTitle.setText(time + " - Start");
                     tvTitle.setTextColor(Color.parseColor("#2E7D32")); 
                     tvTitle.setTypeface(null, android.graphics.Typeface.BOLD);
                     itemView.setBackgroundColor(Color.parseColor("#E8F5E9")); 
                 } else {
-                    swatch.setBackgroundColor(Color.parseColor("#F44336")); // Red swatch
+                    swatch.setImageResource(R.drawable.ic_stop);
+                    swatch.setColorFilter(Color.GRAY); 
                     tvTitle.setText(time + " - Stop");
                     tvTitle.setTextColor(Color.parseColor("#C62828")); 
                     tvTitle.setTypeface(null, android.graphics.Typeface.BOLD);
