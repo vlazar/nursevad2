@@ -32,6 +32,7 @@ public class VadService extends Service {
     private boolean isProcessingResponse = false;
     
     private long speechStartMs = 0;
+    // FIX: Accumulate linear RMS instead of logarithmic dB
     private double accumulatedRms = 0; 
     private int frameCount = 0;
     private int silenceFrames = 0;
@@ -87,8 +88,6 @@ public class VadService extends Service {
 
         if (intent != null) {
             if ("STOP".equals(intent.getAction())) {
-                EventBus.getInstance().postVolume(0);
-                EventBus.getInstance().postDebug("Vol: 0% | VAD Prob: 0,000");
                 stopSelf();
                 return START_NOT_STICKY;
             }
@@ -105,13 +104,8 @@ public class VadService extends Service {
                     isPaused = false;
                     isProcessingResponse = false;
                     EventBus.getInstance().postPlayingUri(null);
-                    if (isRunning) {
-                        EventBus.getInstance().postStatus("Listening...");
-                    } else {
-                        EventBus.getInstance().postStatus("Idle");
-                        EventBus.getInstance().postVolume(0);
-                        EventBus.getInstance().postDebug("Vol: 0% | VAD Prob: 0,000");
-                    }
+                    if (isRunning) EventBus.getInstance().postStatus("Listening...");
+                    else EventBus.getInstance().postStatus("Idle");
                 }
                 return START_STICKY;
             }
@@ -169,9 +163,11 @@ public class VadService extends Service {
         double meanSquare = sum / chunk.length;
         double rms = Math.sqrt(meanSquare);
         
+        // Protect against Math.log10(0) which results in -Infinity
         double safeRms = Math.max(1.0, rms);
         double db = 20 * Math.log10(safeRms / 32768.0);
         
+        // Linear Perceptual Mapping: -55 dB (0%) to -5 dB (100%)
         double normalizedDb = (db + 55.0) / 50.0;
         normalizedDb = Math.max(0.0, Math.min(1.0, normalizedDb));
         int percent = (int) Math.round(normalizedDb * 100.0);
@@ -182,9 +178,7 @@ public class VadService extends Service {
         float prob = 0;
         if (vad != null) prob = vad.predict(chunk);
         
-        // Format dynamically to handle locale-specific commas/periods if needed, but fallback to string replacement to guarantee match
-        String probStr = String.format("%.3f", prob).replace('.', ',');
-        EventBus.getInstance().postDebug("Vol: " + percent + "% | VAD Prob: " + probStr);
+        EventBus.getInstance().postDebug("Vol: " + percent + "% | VAD Prob: " + String.format("%.3f", prob));
 
         if (prob > 0.5 && !isSpeaking && !isProcessingResponse) {
             isSpeaking = true;
@@ -221,6 +215,7 @@ public class VadService extends Service {
                 try { fos.write(byteBuffer); } catch (IOException e) {}
             }
 
+            // FIX: Accumulate linear RMS, not logarithmic dB
             accumulatedRms += rms;
             frameCount++;
             if (prob < 0.4) silenceFrames++;
@@ -260,10 +255,12 @@ public class VadService extends Service {
         int thresholdSec = SettingsManager.getDurationThreshold(this);
         
         if (durationMs >= thresholdSec * 1000) {
+            // FIX: Calculate average linear RMS first, then convert to dB
             double avgRms = accumulatedRms / frameCount;
             double safeAvgRms = Math.max(1.0, avgRms);
             double avgDb = 20 * Math.log10(safeAvgRms / 32768.0);
             
+            // Linear Perceptual Mapping: -55 dB (0%) to -5 dB (100%)
             double normalizedAvgDb = (avgDb + 55.0) / 50.0;
             normalizedAvgDb = Math.max(0.0, Math.min(1.0, normalizedAvgDb));
             int avgPercent = (int) Math.round(normalizedAvgDb * 100.0);
@@ -301,11 +298,6 @@ public class VadService extends Service {
     private void triggerPlay(AudioFile file) {
         if (file == null) return;
         isPaused = true;
-        
-        // Reset UI indicators during playback
-        EventBus.getInstance().postVolume(0);
-        EventBus.getInstance().postDebug("Vol: 0% | VAD Prob: 0,000");
-        
         EventBus.getInstance().postStatus("Playing: " + file.displayName);
         EventBus.getInstance().postPlayingUri(file.uri);
         
@@ -333,11 +325,6 @@ public class VadService extends Service {
 
     public void playSpecificFile(String uriString) {
         isPaused = true;
-        
-        // Reset UI indicators during playback
-        EventBus.getInstance().postVolume(0);
-        EventBus.getInstance().postDebug("Vol: 0% | VAD Prob: 0,000");
-        
         EventBus.getInstance().postPlayingUri(uriString);
         try {
             if (mediaPlayer != null) mediaPlayer.release();
@@ -473,10 +460,6 @@ public class VadService extends Service {
         if (fos != null) { try { fos.close(); } catch (IOException e) {} }
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
         if (audioRecord != null) audioRecord.stop();
-        
-        EventBus.getInstance().postVolume(0);
-        EventBus.getInstance().postDebug("Vol: 0% | VAD Prob: 0,000");
-        
         EventRepository.getInstance().addEvent(new LogEvent(LogEvent.Type.STOP));
         super.onDestroy();
     }

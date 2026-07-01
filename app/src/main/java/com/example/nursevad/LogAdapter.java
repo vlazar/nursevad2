@@ -5,6 +5,7 @@ import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.ImageButton;
+import android.widget.ImageView;
 import android.widget.TextView;
 import androidx.annotation.NonNull;
 import androidx.recyclerview.widget.DiffUtil;
@@ -62,7 +63,7 @@ public class LogAdapter extends ListAdapter<LogEvent, LogAdapter.ViewHolder> {
     }
 
     class ViewHolder extends RecyclerView.ViewHolder {
-        View swatch;
+        ImageView swatch;
         TextView tvTitle;
         TextView tvPlayed;
         ImageButton btnPlay;
@@ -81,6 +82,8 @@ public class LogAdapter extends ListAdapter<LogEvent, LogAdapter.ViewHolder> {
             if (event.type == LogEvent.Type.SPEECH) {
                 int color = getColorForLevel(event.level);
                 swatch.setBackgroundColor(color);
+                swatch.setImageResource(0); 
+                swatch.setAlpha(1.0f);
                 
                 tvTitle.setText(time + " - Level " + event.level);
                 tvTitle.setTextColor(Color.BLACK);
@@ -88,7 +91,7 @@ public class LogAdapter extends ListAdapter<LogEvent, LogAdapter.ViewHolder> {
                 itemView.setBackgroundColor(Color.TRANSPARENT);
                 
                 if (event.displayName != null && !event.displayName.isEmpty()) {
-                    tvPlayed.setText(event.displayName); 
+                    tvPlayed.setText(event.displayName); // Removed "Played: " prefix
                     tvPlayed.setVisibility(View.VISIBLE);
                 } else {
                     tvPlayed.setVisibility(View.GONE);
@@ -116,18 +119,20 @@ public class LogAdapter extends ListAdapter<LogEvent, LogAdapter.ViewHolder> {
                 });
 
             } else {
-                // INVISIBLE keeps the 40dp space occupied so text doesn't shift left
-                btnPlay.setVisibility(View.INVISIBLE); 
+                btnPlay.setVisibility(View.GONE);
                 tvPlayed.setVisibility(View.GONE);
+                swatch.setBackgroundColor(Color.TRANSPARENT);
                 
                 if (event.type == LogEvent.Type.START) {
-                    swatch.setBackgroundColor(Color.TRANSPARENT); 
+                    swatch.setImageResource(R.drawable.ic_play);
+                    swatch.setColorFilter(Color.GRAY); 
                     tvTitle.setText(time + " - Start");
                     tvTitle.setTextColor(Color.parseColor("#2E7D32")); 
                     tvTitle.setTypeface(null, android.graphics.Typeface.BOLD);
                     itemView.setBackgroundColor(Color.parseColor("#E8F5E9")); 
                 } else {
-                    swatch.setBackgroundColor(Color.TRANSPARENT); 
+                    swatch.setImageResource(R.drawable.ic_stop);
+                    swatch.setColorFilter(Color.GRAY); 
                     tvTitle.setText(time + " - Stop");
                     tvTitle.setTextColor(Color.parseColor("#C62828")); 
                     tvTitle.setTypeface(null, android.graphics.Typeface.BOLD);
