@@ -24,10 +24,7 @@ public class VadService extends Service {
     private AudioRecord audioRecord;
     private Thread recordingThread;
     private boolean isRunning = false;
-    
-    // Public static flag for TelegramManager to read the current VAD state
     public static boolean isVadListening = false; 
-    
     private boolean isPaused = false;
     private PowerManager.WakeLock wakeLock;
     private SileroVad vad;
@@ -136,7 +133,8 @@ public class VadService extends Service {
 
         if (!isRunning) {
             isRunning = true;
-            isVadListening = true; // Update static flag for Telegram
+            isVadListening = true;
+            EventBus.getInstance().postVadRunning(true); // SYNC UI
             if (wakeLock != null && !wakeLock.isHeld()) wakeLock.acquire();
             
             if (vad == null) {
@@ -304,7 +302,6 @@ public class VadService extends Service {
         LogEvent event = new LogEvent(LogEvent.Type.SPEECH, level, file, recordedUri);
         EventRepository.getInstance().addEvent(event);
         
-        // Send to Telegram Bot
         if (recordedFile != null && recordedFile.exists()) {
             String responseName = (file != null) ? file.displayName : null;
             TelegramManager.getInstance().sendAudioEvent(Uri.fromFile(recordedFile).toString(), level, responseName);
@@ -496,7 +493,8 @@ public class VadService extends Service {
     @Override
     public void onDestroy() {
         isRunning = false;
-        isVadListening = false; // Update static flag for Telegram
+        isVadListening = false;
+        EventBus.getInstance().postVadRunning(false); // SYNC UI
         handler.removeCallbacksAndMessages(null);
         if (fos != null) { try { fos.close(); } catch (IOException e) {} }
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
