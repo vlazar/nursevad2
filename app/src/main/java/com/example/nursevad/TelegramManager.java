@@ -110,8 +110,8 @@ public class TelegramManager {
             @Override
             public void onResponse(GetFile request, GetFileResponse response) {
                 if (response.isOk()) {
-                    String filePath = response.file().filePath();
-                    String fileUrl = bot.getFullFilePath(filePath);
+                    // FIX: Pass the Telegram File object directly to getFullFilePath()
+                    String fileUrl = bot.getFullFilePath(response.file());
                     
                     // Run download on a background thread to avoid blocking the Telegram update thread
                     new Thread(() -> {
