@@ -1,6 +1,7 @@
 package com.example.nursevad;
 
 import android.content.Context;
+import android.content.Intent;
 import android.util.Log;
 import com.pengrad.telegrambot.TelegramBot;
 import com.pengrad.telegrambot.UpdatesListener;
@@ -11,14 +12,20 @@ import com.pengrad.telegrambot.request.EditMessageText;
 import com.pengrad.telegrambot.request.SendAudio;
 import com.pengrad.telegrambot.request.SendMessage;
 import com.pengrad.telegrambot.request.AnswerCallbackQuery;
+import com.pengrad.telegrambot.request.GetFile;
 import com.pengrad.telegrambot.response.SendResponse;
+import com.pengrad.telegrambot.response.GetFileResponse;
 import com.pengrad.telegrambot.Callback;
 import com.pengrad.telegrambot.model.request.InlineKeyboardButton;
 import com.pengrad.telegrambot.model.request.InlineKeyboardMarkup;
 import com.pengrad.telegrambot.model.request.ParseMode;
 
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.util.Set;
 
 public class TelegramManager {
@@ -88,7 +95,62 @@ public class TelegramManager {
     private void handleMessage(Message message) {
         Set<Long> allowedIds = SettingsManager.getAllowedUserIds(appContext);
         if (message.from() == null || !isAuthorized(message.from().id(), allowedIds)) return;
+        
+        // Intercept Voice Messages
+        if (message.voice() != null) {
+            downloadAndQueueVoice(message.voice().fileId());
+            return;
+        }
+        
         sendMainMenu(message.chat().id(), message.messageId());
+    }
+
+    private void downloadAndQueueVoice(String fileId) {
+        bot.execute(new GetFile(fileId), new Callback<GetFile, GetFileResponse>() {
+            @Override
+            public void onResponse(GetFile request, GetFileResponse response) {
+                if (response.isOk()) {
+                    String filePath = response.file().filePath();
+                    String fileUrl = bot.getFullFilePath(filePath);
+                    
+                    // Run download on a background thread to avoid blocking the Telegram update thread
+                    new Thread(() -> {
+                        try {
+                            URL url = new URL(fileUrl);
+                            HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+                            connection.connect();
+                            
+                            File tempFile = new File(appContext.getCacheDir(), "tg_voice_" + System.currentTimeMillis() + ".ogg");
+                            FileOutputStream output = new FileOutputStream(tempFile);
+                            InputStream input = connection.getInputStream();
+                            
+                            byte[] data = new byte[4096];
+                            int count;
+                            while ((count = input.read(data)) != -1) {
+                                output.write(data, 0, count);
+                            }
+                            output.close();
+                            input.close();
+                            connection.disconnect();
+                            
+                            // Send to VadService queue
+                            Intent i = new Intent(appContext, VadService.class);
+                            i.setAction("PLAY_TELEGRAM_VOICE");
+                            i.putExtra("PATH", tempFile.getAbsolutePath());
+                            appContext.startService(i);
+                            
+                        } catch (Exception e) {
+                            Log.e("TelegramManager", "Failed to download voice", e);
+                        }
+                    }).start();
+                }
+            }
+
+            @Override
+            public void onFailure(GetFile request, IOException e) {
+                Log.e("TelegramManager", "Failed to get file info", e);
+            }
+        });
     }
 
     private void handleCallback(CallbackQuery callback) {

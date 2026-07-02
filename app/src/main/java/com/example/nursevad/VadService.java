@@ -49,6 +49,9 @@ public class VadService extends Service {
     private Map<Integer, String> lastPlayed = new HashMap<>();
 
     private Handler handler = new Handler(Looper.getMainLooper());
+    
+    // NEW: Queue for incoming Telegram voice messages
+    private Queue<String> telegramVoiceQueue = new LinkedList<>();
 
     public static void startService(Context context) {
         Intent i = new Intent(context, VadService.class);
@@ -103,7 +106,7 @@ public class VadService extends Service {
 
         if (intent != null) {
             if ("STOP".equals(intent.getAction())) {
-                EventBus.getInstance().postVadRunning(false); // Sync UI immediately
+                EventBus.getInstance().postVadRunning(false); 
                 EventBus.getInstance().postVolume(0);
                 EventBus.getInstance().postDebug("Vol: 0% | VAD Prob: 0,000");
                 stopSelf();
@@ -114,22 +117,25 @@ public class VadService extends Service {
                 if (uri != null) playSpecificFile(uri);
                 return START_STICKY;
             }
-            if ("STOP_PLAYBACK".equals(intent.getAction())) {
-                if (mediaPlayer != null && mediaPlayer.isPlaying()) {
-                    mediaPlayer.stop();
-                    mediaPlayer.release();
-                    mediaPlayer = null;
-                    isPaused = false;
-                    isProcessingResponse = false;
-                    EventBus.getInstance().postPlayingUri(null);
-                    if (isRunning) {
-                        EventBus.getInstance().postStatus("Listening...");
-                    } else {
-                        EventBus.getInstance().postStatus("Idle");
-                        EventBus.getInstance().postVolume(0);
-                        EventBus.getInstance().postDebug("Vol: 0% | VAD Prob: 0,000");
+            if ("PLAY_TELEGRAM_VOICE".equals(intent.getAction())) {
+                String path = intent.getStringExtra("PATH");
+                if (path != null) {
+                    telegramVoiceQueue.add(path);
+                    // If nothing is currently playing or processing, start playing immediately
+                    if (!isProcessingResponse && (mediaPlayer == null || !mediaPlayer.isPlaying())) {
+                        playNextTelegramVoice();
                     }
                 }
+                return START_STICKY;
+            }
+            if ("STOP_PLAYBACK".equals(intent.getAction())) {
+                if (mediaPlayer != null) {
+                    try { mediaPlayer.stop(); } catch (Exception e) {}
+                    mediaPlayer.release();
+                    mediaPlayer = null;
+                }
+                telegramVoiceQueue.clear(); // Clear queue on manual stop
+                onPlaybackComplete();
                 return START_STICKY;
             }
         }
@@ -137,7 +143,7 @@ public class VadService extends Service {
         if (!isRunning) {
             isRunning = true;
             isVadListening = true;
-            EventBus.getInstance().postVadRunning(true); // Sync UI
+            EventBus.getInstance().postVadRunning(true); 
             
             if (wakeLock != null && !wakeLock.isHeld()) wakeLock.acquire();
             
@@ -285,6 +291,7 @@ public class VadService extends Service {
             } else {
                 EventBus.getInstance().postStatus("Listening...");
                 isProcessingResponse = false;
+                if (!telegramVoiceQueue.isEmpty()) playNextTelegramVoice();
                 return;
             }
         }
@@ -316,6 +323,7 @@ public class VadService extends Service {
         } else {
             EventBus.getInstance().postStatus("Listening... (No files in Level " + level + ")");
             isProcessingResponse = false;
+            if (!telegramVoiceQueue.isEmpty()) playNextTelegramVoice();
         }
     }
 
@@ -343,20 +351,10 @@ public class VadService extends Service {
             mediaPlayer = new MediaPlayer();
             mediaPlayer.setDataSource(this, Uri.parse(file.uri));
             mediaPlayer.prepare();
-            mediaPlayer.setOnCompletionListener(mp -> {
-                isPaused = false;
-                isProcessingResponse = false;
-                EventBus.getInstance().postPlayingUri(null);
-                if (isRunning) EventBus.getInstance().postStatus("Listening...");
-                else EventBus.getInstance().postStatus("Idle");
-            });
+            mediaPlayer.setOnCompletionListener(mp -> onPlaybackComplete());
             mediaPlayer.start();
         } catch (IOException e) {
-            isPaused = false;
-            isProcessingResponse = false;
-            EventBus.getInstance().postPlayingUri(null);
-            if (isRunning) EventBus.getInstance().postStatus("Listening...");
-            else EventBus.getInstance().postStatus("Idle");
+            onPlaybackComplete();
         }
     }
 
@@ -379,21 +377,54 @@ public class VadService extends Service {
             }
             
             mediaPlayer.prepare();
-            mediaPlayer.setOnCompletionListener(mp -> {
-                isPaused = false;
-                isProcessingResponse = false;
-                EventBus.getInstance().postPlayingUri(null);
-                if (isRunning) EventBus.getInstance().postStatus("Listening...");
-                else EventBus.getInstance().postStatus("Idle");
-            });
+            mediaPlayer.setOnCompletionListener(mp -> onPlaybackComplete());
             mediaPlayer.start();
             EventBus.getInstance().postStatus("Playing recorded speech...");
         } catch (Exception e) { 
-            isPaused = false; 
+            onPlaybackComplete();
+        }
+    }
+
+    // NEW: Unified Playback Completion Logic
+    private void onPlaybackComplete() {
+        if (!telegramVoiceQueue.isEmpty()) {
+            playNextTelegramVoice();
+        } else {
+            isPaused = false;
             isProcessingResponse = false;
             EventBus.getInstance().postPlayingUri(null);
             if (isRunning) EventBus.getInstance().postStatus("Listening...");
             else EventBus.getInstance().postStatus("Idle");
+        }
+    }
+
+    // NEW: Telegram Voice Queue Player
+    private void playNextTelegramVoice() {
+        String path = telegramVoiceQueue.poll();
+        if (path == null) {
+            onPlaybackComplete();
+            return;
+        }
+        
+        isPaused = true;
+        isProcessingResponse = true; // Lock state machine to prevent normal responses
+        EventBus.getInstance().postVolume(0);
+        EventBus.getInstance().postDebug("Vol: 0% | VAD Prob: 0,000");
+        EventBus.getInstance().postStatus("Playing Telegram Voice...");
+        
+        try {
+            if (mediaPlayer != null) mediaPlayer.release();
+            mediaPlayer = new MediaPlayer();
+            mediaPlayer.setDataSource(path);
+            mediaPlayer.prepare();
+            mediaPlayer.setOnCompletionListener(mp -> {
+                new File(path).delete(); // Clean up temp file
+                onPlaybackComplete();
+            });
+            mediaPlayer.start();
+        } catch (Exception e) {
+            new File(path).delete();
+            onPlaybackComplete();
         }
     }
 
@@ -498,7 +529,7 @@ public class VadService extends Service {
     public void onDestroy() {
         isRunning = false;
         isVadListening = false;
-        EventBus.getInstance().postVadRunning(false); // Sync UI
+        EventBus.getInstance().postVadRunning(false); 
         
         handler.removeCallbacksAndMessages(null);
         if (fos != null) { try { fos.close(); } catch (IOException e) {} }
