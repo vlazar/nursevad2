@@ -49,8 +49,6 @@ public class VadService extends Service {
     private Map<Integer, String> lastPlayed = new HashMap<>();
 
     private Handler handler = new Handler(Looper.getMainLooper());
-    
-    // NEW: Queue for incoming Telegram voice messages
     private Queue<String> telegramVoiceQueue = new LinkedList<>();
 
     public static void startService(Context context) {
@@ -119,9 +117,12 @@ public class VadService extends Service {
             }
             if ("PLAY_TELEGRAM_VOICE".equals(intent.getAction())) {
                 String path = intent.getStringExtra("PATH");
+                String sender = intent.getStringExtra("SENDER");
                 if (path != null) {
+                    LogEvent event = new LogEvent(LogEvent.Type.TELEGRAM_VOICE, path, sender != null ? sender : "Telegram Bot");
+                    EventRepository.getInstance().addEvent(event);
+                    
                     telegramVoiceQueue.add(path);
-                    // If nothing is currently playing or processing, start playing immediately
                     if (!isProcessingResponse && (mediaPlayer == null || !mediaPlayer.isPlaying())) {
                         playNextTelegramVoice();
                     }
@@ -134,7 +135,7 @@ public class VadService extends Service {
                     mediaPlayer.release();
                     mediaPlayer = null;
                 }
-                telegramVoiceQueue.clear(); // Clear queue on manual stop
+                telegramVoiceQueue.clear(); 
                 onPlaybackComplete();
                 return START_STICKY;
             }
@@ -385,7 +386,6 @@ public class VadService extends Service {
         }
     }
 
-    // NEW: Unified Playback Completion Logic
     private void onPlaybackComplete() {
         if (!telegramVoiceQueue.isEmpty()) {
             playNextTelegramVoice();
@@ -398,7 +398,6 @@ public class VadService extends Service {
         }
     }
 
-    // NEW: Telegram Voice Queue Player
     private void playNextTelegramVoice() {
         String path = telegramVoiceQueue.poll();
         if (path == null) {
@@ -407,10 +406,13 @@ public class VadService extends Service {
         }
         
         isPaused = true;
-        isProcessingResponse = true; // Lock state machine to prevent normal responses
+        isProcessingResponse = true; 
         EventBus.getInstance().postVolume(0);
         EventBus.getInstance().postDebug("Vol: 0% | VAD Prob: 0,000");
         EventBus.getInstance().postStatus("Playing Telegram Voice...");
+        
+        // Update UI play state so the left icon turns into a Stop button
+        EventBus.getInstance().postPlayingUri(Uri.fromFile(new File(path)).toString());
         
         try {
             if (mediaPlayer != null) mediaPlayer.release();
@@ -418,12 +420,11 @@ public class VadService extends Service {
             mediaPlayer.setDataSource(path);
             mediaPlayer.prepare();
             mediaPlayer.setOnCompletionListener(mp -> {
-                new File(path).delete(); // Clean up temp file
+                // File is NOT deleted here anymore so it can be replayed from the log
                 onPlaybackComplete();
             });
             mediaPlayer.start();
         } catch (Exception e) {
-            new File(path).delete();
             onPlaybackComplete();
         }
     }

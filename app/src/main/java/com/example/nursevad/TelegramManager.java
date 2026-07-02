@@ -96,24 +96,37 @@ public class TelegramManager {
         Set<Long> allowedIds = SettingsManager.getAllowedUserIds(appContext);
         if (message.from() == null || !isAuthorized(message.from().id(), allowedIds)) return;
         
-        // Intercept Voice Messages
         if (message.voice() != null) {
-            downloadAndQueueVoice(message.voice().fileId());
+            String senderName = "Telegram Bot";
+            if (message.from().firstName() != null) {
+                senderName = message.from().firstName();
+                if (message.from().lastName() != null) senderName += " " + message.from().lastName();
+            } else if (message.from().username() != null) {
+                senderName = message.from().username();
+            }
+            
+            broadcastMessage("▶️ Voice message received");
+            downloadAndQueueVoice(message.voice().fileId(), senderName);
             return;
         }
         
         sendMainMenu(message.chat().id(), message.messageId());
     }
 
-    private void downloadAndQueueVoice(String fileId) {
+    private void broadcastMessage(String text) {
+        Set<Long> allowedIds = SettingsManager.getAllowedUserIds(appContext);
+        for (Long chatId : allowedIds) {
+            bot.execute(new SendMessage(chatId, text));
+        }
+    }
+
+    private void downloadAndQueueVoice(String fileId, String senderName) {
         bot.execute(new GetFile(fileId), new Callback<GetFile, GetFileResponse>() {
             @Override
             public void onResponse(GetFile request, GetFileResponse response) {
                 if (response.isOk()) {
-                    // FIX: Pass the Telegram File object directly to getFullFilePath()
                     String fileUrl = bot.getFullFilePath(response.file());
                     
-                    // Run download on a background thread to avoid blocking the Telegram update thread
                     new Thread(() -> {
                         try {
                             URL url = new URL(fileUrl);
@@ -133,10 +146,10 @@ public class TelegramManager {
                             input.close();
                             connection.disconnect();
                             
-                            // Send to VadService queue
                             Intent i = new Intent(appContext, VadService.class);
                             i.setAction("PLAY_TELEGRAM_VOICE");
                             i.putExtra("PATH", tempFile.getAbsolutePath());
+                            i.putExtra("SENDER", senderName);
                             appContext.startService(i);
                             
                         } catch (Exception e) {

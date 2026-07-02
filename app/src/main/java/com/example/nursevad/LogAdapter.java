@@ -5,6 +5,7 @@ import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.ImageButton;
+import android.widget.ImageView;
 import android.widget.TextView;
 import androidx.annotation.NonNull;
 import androidx.recyclerview.widget.DiffUtil;
@@ -62,7 +63,7 @@ public class LogAdapter extends ListAdapter<LogEvent, LogAdapter.ViewHolder> {
     }
 
     class ViewHolder extends RecyclerView.ViewHolder {
-        View swatch;
+        ImageView swatch;
         TextView tvTitle;
         TextView tvPlayed;
         ImageButton btnPlay;
@@ -81,6 +82,10 @@ public class LogAdapter extends ListAdapter<LogEvent, LogAdapter.ViewHolder> {
             if (event.type == LogEvent.Type.SPEECH) {
                 int color = getColorForLevel(event.level);
                 swatch.setBackgroundColor(color);
+                swatch.setImageResource(0); 
+                swatch.setAlpha(1.0f);
+                swatch.setClickable(false);
+                swatch.setOnClickListener(null);
                 
                 tvTitle.setText(time + " - Level " + event.level);
                 tvTitle.setTextColor(Color.BLACK);
@@ -107,18 +112,48 @@ public class LogAdapter extends ListAdapter<LogEvent, LogAdapter.ViewHolder> {
                 btnPlay.setVisibility(View.VISIBLE);
                 btnPlay.setOnClickListener(v -> {
                     if (listener != null && event.recordedSpeechUri != null) {
-                        if (isPlaying) {
-                            listener.onStopClick();
-                        } else {
-                            listener.onPlayClick(event.recordedSpeechUri);
-                        }
+                        if (isPlaying) listener.onStopClick();
+                        else listener.onPlayClick(event.recordedSpeechUri);
+                    }
+                });
+
+            } else if (event.type == LogEvent.Type.TELEGRAM_VOICE) {
+                itemView.setBackgroundColor(Color.parseColor("#E3F2FD")); // Light blue background
+                swatch.setBackgroundColor(Color.TRANSPARENT);
+                
+                boolean isPlaying = event.recordedSpeechUri != null && event.recordedSpeechUri.equals(currentPlayingUri);
+                if (isPlaying) {
+                    swatch.setImageResource(R.drawable.ic_stop);
+                    swatch.setColorFilter(Color.parseColor("#E57373")); // Light red stop
+                } else {
+                    swatch.setImageResource(R.drawable.ic_play);
+                    swatch.setColorFilter(Color.parseColor("#1976D2")); // Blue play
+                }
+                
+                tvTitle.setText(time + " - Voice Message");
+                tvTitle.setTextColor(Color.parseColor("#1976D2")); // Blue font
+                tvTitle.setTypeface(null, android.graphics.Typeface.BOLD);
+                
+                tvPlayed.setText("from " + (event.senderName != null ? event.senderName : "Telegram Bot"));
+                tvPlayed.setTextColor(Color.DKGRAY);
+                tvPlayed.setVisibility(View.VISIBLE);
+                
+                btnPlay.setVisibility(View.INVISIBLE); // Hide right button
+                
+                swatch.setClickable(true);
+                swatch.setFocusable(true);
+                swatch.setOnClickListener(v -> {
+                    if (listener != null && event.recordedSpeechUri != null) {
+                        if (isPlaying) listener.onStopClick();
+                        else listener.onPlayClick(event.recordedSpeechUri);
                     }
                 });
 
             } else {
-                // INVISIBLE keeps the 40dp space occupied so text doesn't shift left
                 btnPlay.setVisibility(View.INVISIBLE); 
                 tvPlayed.setVisibility(View.GONE);
+                swatch.setClickable(false);
+                swatch.setOnClickListener(null);
                 
                 if (event.type == LogEvent.Type.START) {
                     swatch.setBackgroundColor(Color.TRANSPARENT); 
