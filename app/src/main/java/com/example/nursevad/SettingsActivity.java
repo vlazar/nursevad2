@@ -35,7 +35,6 @@ public class SettingsActivity extends AppCompatActivity {
     private String selectedFolderUri;
     private String selectedFolderName;
 
-    // NEW: For reactive settings sync
     private SharedPreferences prefs;
     private SharedPreferences.OnSharedPreferenceChangeListener prefListener;
 
@@ -58,10 +57,9 @@ public class SettingsActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_settings);
 
-        // Initialize preference listener
         prefs = getSharedPreferences("NurseVadPrefs", Context.MODE_PRIVATE);
         prefListener = (sharedPreferences, key) -> {
-            // Reload UI whenever a setting is changed externally (e.g. by Telegram Bot)
+            // Only reload UI if the Telegram Bot changes a setting in the background
             runOnUiThread(this::loadSettings);
         };
 
@@ -76,17 +74,16 @@ public class SettingsActivity extends AppCompatActivity {
     }
 
     @Override
-    protected void onResume() {
-        super.onResume();
+    protected void onStart() {
+        super.onStart();
         // Register listener when screen is visible
         prefs.registerOnSharedPreferenceChangeListener(prefListener);
-        loadSettings(); // Ensure we have latest data when returning to screen
     }
 
     @Override
-    protected void onPause() {
-        super.onPause();
-        // Unregister to prevent leaks
+    protected void onStop() {
+        super.onStop();
+        // Unregister to prevent leaks and prevent overwriting UI when app is backgrounded
         prefs.unregisterOnSharedPreferenceChangeListener(prefListener);
     }
 
@@ -195,13 +192,18 @@ public class SettingsActivity extends AppCompatActivity {
         selectedFolderName = folderName;
         tvFolderName.setText(folderName != null ? folderName : "No folder selected");
         
-        etBotToken.setText(SettingsManager.getBotToken(this));
-        Set<Long> ids = SettingsManager.getAllowedUserIds(this);
-        StringBuilder sb = new StringBuilder();
-        for (Long id : ids) {
-            if (sb.length() > 0) sb.append(", ");
-            sb.append(id);
+        // Prevent overwriting text fields if the user is currently typing/pasting
+        if (!etBotToken.hasFocus()) {
+            etBotToken.setText(SettingsManager.getBotToken(this));
         }
-        etUserIds.setText(sb.toString());
+        if (!etUserIds.hasFocus()) {
+            Set<Long> ids = SettingsManager.getAllowedUserIds(this);
+            StringBuilder sb = new StringBuilder();
+            for (Long id : ids) {
+                if (sb.length() > 0) sb.append(", ");
+                sb.append(id);
+            }
+            etUserIds.setText(sb.toString());
+        }
     }
 }
