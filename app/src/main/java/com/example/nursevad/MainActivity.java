@@ -17,6 +17,7 @@ import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
+import java.util.Set;
 
 public class MainActivity extends AppCompatActivity {
     private boolean isListening = false;
@@ -85,19 +86,18 @@ public class MainActivity extends AppCompatActivity {
             recyclerView.scrollToPosition(0);
         });
 
-        // REAL-TIME SYNC: Observe VAD running state from EventBus
-        EventBus.getInstance().getVadRunning().observe(this, isRunning -> {
-            isListening = isRunning;
-            btnStartStop.setText(isRunning ? "Stop" : "Start");
-        });
-
         btnStartStop.setOnClickListener(v -> {
             Intent i = new Intent(this, VadService.class);
             if (!isListening) {
                 ContextCompat.startForegroundService(this, i);
+                btnStartStop.setText("Stop");
+                isListening = true;
             } else {
                 i.setAction("STOP");
                 startService(i);
+                btnStartStop.setText("Start");
+                isListening = false;
+                statusText.setText("Idle");
             }
         });
 
@@ -120,7 +120,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void startTelegramServiceIfConfigured() {
         String token = SettingsManager.getBotToken(this);
-        java.util.Set<Long> ids = SettingsManager.getAllowedUserIds(this);
+        Set<Long> ids = SettingsManager.getAllowedUserIds(this);
         
         Intent i = new Intent(this, TelegramService.class);
         if (token != null && !token.isEmpty() && !ids.isEmpty()) {

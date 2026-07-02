@@ -1,7 +1,6 @@
 package com.example.nursevad;
 
 import android.content.Intent;
-import android.content.SharedPreferences;
 import android.net.Uri;
 import android.os.Bundle;
 import android.widget.Button;
@@ -33,10 +32,6 @@ public class SettingsActivity extends AppCompatActivity {
     
     private String selectedFolderUri;
     private String selectedFolderName;
-    
-    // Prevents infinite loops when updating UI from SharedPreferences changes
-    private boolean isSyncingFromPrefs = false;
-    private SharedPreferences.OnSharedPreferenceChangeListener prefListener;
 
     private final ActivityResultLauncher<Uri> folderPickerLauncher = registerForActivityResult(
             new ActivityResultContracts.OpenDocumentTree(),
@@ -67,46 +62,6 @@ public class SettingsActivity extends AppCompatActivity {
         loadSettings();
     }
 
-    @Override
-    protected void onResume() {
-        super.onResume();
-        // REAL-TIME SYNC: Listen for preference changes (e.g., from Telegram Bot)
-        prefListener = (prefs, key) -> {
-            if (key == null) return;
-            runOnUiThread(() -> {
-                isSyncingFromPrefs = true;
-                try {
-                    if (key.startsWith("thresholds_")) {
-                        int idx = Integer.parseInt(key.split("_")[1]);
-                        int val = prefs.getInt(key, 0);
-                        sbThresholds[idx].setProgress(val);
-                        tvThresholds[idx].setText(val + "%");
-                    } else if (key.equals("duration_threshold")) {
-                        int val = prefs.getInt(key, 1);
-                        sbDuration.setProgress(val - 1);
-                        tvDuration.setText("shorter than " + val + " seconds");
-                    } else if (key.equals("delay_response")) {
-                        int val = prefs.getInt(key, 0);
-                        sbDelay.setProgress(val);
-                        tvDelay.setText(val + " seconds");
-                    } else if (key.equals("wait_for_end")) {
-                        boolean val = prefs.getBoolean(key, true);
-                        switchWaitForEnd.setChecked(val);
-                    }
-                } finally {
-                    isSyncingFromPrefs = false;
-                }
-            });
-        };
-        getSharedPreferences("NurseVadPrefs", MODE_PRIVATE).registerOnSharedPreferenceChangeListener(prefListener);
-    }
-
-    @Override
-    protected void onPause() {
-        super.onPause();
-        getSharedPreferences("NurseVadPrefs", MODE_PRIVATE).unregisterOnSharedPreferenceChangeListener(prefListener);
-    }
-
     private void initThresholds() {
         int[] seekBarIds = {R.id.sbThreshold1, R.id.sbThreshold2, R.id.sbThreshold3, R.id.sbThreshold4, R.id.sbThreshold5};
         int[] textViewIds = {R.id.tvThreshold1, R.id.tvThreshold2, R.id.tvThreshold3, R.id.tvThreshold4, R.id.tvThreshold5};
@@ -116,14 +71,7 @@ public class SettingsActivity extends AppCompatActivity {
             sbThresholds[i].setMax(100);
             final int index = i;
             sbThresholds[i].setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-                @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { 
-                    tvThresholds[index].setText(progress + "%"); 
-                    if (!isSyncingFromPrefs) {
-                        int[] thresholds = SettingsManager.getThresholds(SettingsActivity.this);
-                        thresholds[index] = progress;
-                        SettingsManager.saveThresholds(SettingsActivity.this, thresholds);
-                    }
-                }
+                @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { tvThresholds[index].setText(progress + "%"); }
                 @Override public void onStartTrackingTouch(SeekBar seekBar) {}
                 @Override public void onStopTrackingTouch(SeekBar seekBar) {}
             });
@@ -135,10 +83,7 @@ public class SettingsActivity extends AppCompatActivity {
         tvDuration = findViewById(R.id.tvDuration);
         sbDuration.setMax(9); 
         sbDuration.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { 
-                tvDuration.setText("shorter than " + (progress + 1) + " seconds"); 
-                if (!isSyncingFromPrefs) SettingsManager.saveDurationThreshold(SettingsActivity.this, progress + 1);
-            }
+            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { tvDuration.setText("shorter than " + (progress + 1) + " seconds"); }
             @Override public void onStartTrackingTouch(SeekBar seekBar) {}
             @Override public void onStopTrackingTouch(SeekBar seekBar) {}
         });
@@ -148,10 +93,7 @@ public class SettingsActivity extends AppCompatActivity {
         sbDelay = findViewById(R.id.sbDelay);
         tvDelay = findViewById(R.id.tvDelay);
         sbDelay.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { 
-                tvDelay.setText(progress + " seconds"); 
-                if (!isSyncingFromPrefs) SettingsManager.saveDelay(SettingsActivity.this, progress);
-            }
+            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { tvDelay.setText(progress + " seconds"); }
             @Override public void onStartTrackingTouch(SeekBar seekBar) {}
             @Override public void onStopTrackingTouch(SeekBar seekBar) {}
         });
@@ -159,9 +101,6 @@ public class SettingsActivity extends AppCompatActivity {
 
     private void initWaitForEnd() {
         switchWaitForEnd = findViewById(R.id.switchWaitForEnd);
-        switchWaitForEnd.setOnCheckedChangeListener((buttonView, isChecked) -> {
-            if (!isSyncingFromPrefs) SettingsManager.saveWaitForEnd(this, isChecked);
-        });
     }
 
     private void initFolderPicker() {
@@ -178,12 +117,23 @@ public class SettingsActivity extends AppCompatActivity {
     private void initSaveButton() {
         Button btnSave = findViewById(R.id.btnSave);
         btnSave.setOnClickListener(v -> {
+            int[] thresholds = new int[5];
+            for (int i = 0; i < 5; i++) thresholds[i] = sbThresholds[i].getProgress();
+            SettingsManager.saveThresholds(this, thresholds);
+            
+            SettingsManager.saveDurationThreshold(this, sbDuration.getProgress() + 1);
+            SettingsManager.saveDelay(this, sbDelay.getProgress());
+            SettingsManager.saveWaitForEnd(this, switchWaitForEnd.isChecked());
+            
+            if (selectedFolderUri != null) SettingsManager.saveFolder(this, selectedFolderUri, selectedFolderName);
+            
             String token = etBotToken.getText() != null ? etBotToken.getText().toString().trim() : "";
             String idsStr = etUserIds.getText() != null ? etUserIds.getText().toString().trim() : "";
             
             SettingsManager.saveBotToken(this, token);
             SettingsManager.saveAllowedUserIds(this, idsStr);
             
+            // Restart Telegram Service logic
             Intent tgIntent = new Intent(this, TelegramService.class);
             if (!token.isEmpty() && !idsStr.isEmpty()) {
                 ContextCompat.startForegroundService(this, tgIntent);
@@ -198,38 +148,33 @@ public class SettingsActivity extends AppCompatActivity {
     }
 
     private void loadSettings() {
-        isSyncingFromPrefs = true;
-        try {
-            int[] thresholds = SettingsManager.getThresholds(this);
-            for (int i = 0; i < 5; i++) {
-                sbThresholds[i].setProgress(thresholds[i]);
-                tvThresholds[i].setText(thresholds[i] + "%");
-            }
-            int duration = SettingsManager.getDurationThreshold(this);
-            sbDuration.setProgress(duration - 1);
-            tvDuration.setText("shorter than " + duration + " seconds");
-
-            int delay = SettingsManager.getDelay(this);
-            sbDelay.setProgress(delay);
-            tvDelay.setText(delay + " seconds");
-
-            switchWaitForEnd.setChecked(SettingsManager.getWaitForEnd(this));
-
-            String folderName = SettingsManager.getFolderName(this);
-            selectedFolderUri = SettingsManager.getFolderUri(this);
-            selectedFolderName = folderName;
-            tvFolderName.setText(folderName != null ? folderName : "No folder selected");
-            
-            etBotToken.setText(SettingsManager.getBotToken(this));
-            Set<Long> ids = SettingsManager.getAllowedUserIds(this);
-            StringBuilder sb = new StringBuilder();
-            for (Long id : ids) {
-                if (sb.length() > 0) sb.append(", ");
-                sb.append(id);
-            }
-            etUserIds.setText(sb.toString());
-        } finally {
-            isSyncingFromPrefs = false;
+        int[] thresholds = SettingsManager.getThresholds(this);
+        for (int i = 0; i < 5; i++) {
+            sbThresholds[i].setProgress(thresholds[i]);
+            tvThresholds[i].setText(thresholds[i] + "%");
         }
+        int duration = SettingsManager.getDurationThreshold(this);
+        sbDuration.setProgress(duration - 1);
+        tvDuration.setText("shorter than " + duration + " seconds");
+
+        int delay = SettingsManager.getDelay(this);
+        sbDelay.setProgress(delay);
+        tvDelay.setText(delay + " seconds");
+
+        switchWaitForEnd.setChecked(SettingsManager.getWaitForEnd(this));
+
+        String folderName = SettingsManager.getFolderName(this);
+        selectedFolderUri = SettingsManager.getFolderUri(this);
+        selectedFolderName = folderName;
+        tvFolderName.setText(folderName != null ? folderName : "No folder selected");
+        
+        etBotToken.setText(SettingsManager.getBotToken(this));
+        Set<Long> ids = SettingsManager.getAllowedUserIds(this);
+        StringBuilder sb = new StringBuilder();
+        for (Long id : ids) {
+            if (sb.length() > 0) sb.append(", ");
+            sb.append(id);
+        }
+        etUserIds.setText(sb.toString());
     }
 }
