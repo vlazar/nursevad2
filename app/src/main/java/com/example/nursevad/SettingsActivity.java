@@ -37,6 +37,9 @@ public class SettingsActivity extends AppCompatActivity {
 
     private SharedPreferences prefs;
     private SharedPreferences.OnSharedPreferenceChangeListener prefListener;
+    
+    // FIX: Flag to prevent listener from overwriting UI during the save process
+    private boolean isSaving = false; 
 
     private final ActivityResultLauncher<Uri> folderPickerLauncher = registerForActivityResult(
             new ActivityResultContracts.OpenDocumentTree(),
@@ -59,8 +62,10 @@ public class SettingsActivity extends AppCompatActivity {
 
         prefs = getSharedPreferences("NurseVadPrefs", Context.MODE_PRIVATE);
         prefListener = (sharedPreferences, key) -> {
-            // Only reload UI if the Telegram Bot changes a setting in the background
-            runOnUiThread(this::loadSettings);
+            // FIX: Only reload UI if the Telegram Bot changes a setting in the background
+            if (!isSaving) {
+                runOnUiThread(this::loadSettings);
+            }
         };
 
         initThresholds();
@@ -76,14 +81,12 @@ public class SettingsActivity extends AppCompatActivity {
     @Override
     protected void onStart() {
         super.onStart();
-        // Register listener when screen is visible
         prefs.registerOnSharedPreferenceChangeListener(prefListener);
     }
 
     @Override
     protected void onStop() {
         super.onStop();
-        // Unregister to prevent leaks and prevent overwriting UI when app is backgrounded
         prefs.unregisterOnSharedPreferenceChangeListener(prefListener);
     }
 
@@ -96,7 +99,20 @@ public class SettingsActivity extends AppCompatActivity {
             sbThresholds[i].setMax(100);
             final int index = i;
             sbThresholds[i].setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-                @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { tvThresholds[index].setText(progress + "%"); }
+                @Override 
+                public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { 
+                    // FIX: Snap to steps of 5
+                    int snapped = Math.round(progress / 5.0f) * 5;
+                    if (snapped > 100) snapped = 100;
+                    if (snapped < 0) snapped = 0;
+                    
+                    // Prevent recursive calls if already snapped
+                    if (progress != snapped) {
+                        seekBar.setProgress(snapped);
+                        return; 
+                    }
+                    tvThresholds[index].setText(snapped + "%"); 
+                }
                 @Override public void onStartTrackingTouch(SeekBar seekBar) {}
                 @Override public void onStopTrackingTouch(SeekBar seekBar) {}
             });
@@ -142,6 +158,8 @@ public class SettingsActivity extends AppCompatActivity {
     private void initSaveButton() {
         Button btnSave = findViewById(R.id.btnSave);
         btnSave.setOnClickListener(v -> {
+            isSaving = true; // FIX: Block listener from overwriting UI mid-save
+            
             int[] thresholds = new int[5];
             for (int i = 0; i < 5; i++) thresholds[i] = sbThresholds[i].getProgress();
             SettingsManager.saveThresholds(this, thresholds);
@@ -165,6 +183,8 @@ public class SettingsActivity extends AppCompatActivity {
                 tgIntent.setAction("STOP");
                 startService(tgIntent);
             }
+            
+            isSaving = false; // FIX: Re-enable listener
             
             Toast.makeText(this, "Settings Saved", Toast.LENGTH_SHORT).show();
             finish();
@@ -192,7 +212,6 @@ public class SettingsActivity extends AppCompatActivity {
         selectedFolderName = folderName;
         tvFolderName.setText(folderName != null ? folderName : "No folder selected");
         
-        // Prevent overwriting text fields if the user is currently typing/pasting
         if (!etBotToken.hasFocus()) {
             etBotToken.setText(SettingsManager.getBotToken(this));
         }
