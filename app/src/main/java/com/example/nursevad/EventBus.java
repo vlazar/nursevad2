@@ -9,6 +9,7 @@ public class EventBus {
     private final MutableLiveData<String> status = new MutableLiveData<>("Idle");
     private final MutableLiveData<String> debug = new MutableLiveData<>("");
     private final MutableLiveData<String> playingUri = new MutableLiveData<>(null);
+    private final MutableLiveData<Boolean> vadRunning = new MutableLiveData<>(false); // NEW
 
     private EventBus() {}
 
@@ -28,4 +29,7 @@ public class EventBus {
 
     public void postPlayingUri(String uri) { playingUri.postValue(uri); }
     public LiveData<String> getPlayingUri() { return playingUri; }
+
+    public void postVadRunning(boolean running) { vadRunning.postValue(running); } // NEW
+    public LiveData<Boolean> getVadRunning() { return vadRunning; }               // NEW
 }

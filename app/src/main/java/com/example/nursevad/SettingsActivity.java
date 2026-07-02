@@ -1,6 +1,8 @@
 package com.example.nursevad;
 
+import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.net.Uri;
 import android.os.Bundle;
 import android.widget.Button;
@@ -33,6 +35,10 @@ public class SettingsActivity extends AppCompatActivity {
     private String selectedFolderUri;
     private String selectedFolderName;
 
+    // NEW: For reactive settings sync
+    private SharedPreferences prefs;
+    private SharedPreferences.OnSharedPreferenceChangeListener prefListener;
+
     private final ActivityResultLauncher<Uri> folderPickerLauncher = registerForActivityResult(
             new ActivityResultContracts.OpenDocumentTree(),
             uri -> {
@@ -52,6 +58,13 @@ public class SettingsActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_settings);
 
+        // Initialize preference listener
+        prefs = getSharedPreferences("NurseVadPrefs", Context.MODE_PRIVATE);
+        prefListener = (sharedPreferences, key) -> {
+            // Reload UI whenever a setting is changed externally (e.g. by Telegram Bot)
+            runOnUiThread(this::loadSettings);
+        };
+
         initThresholds();
         initDuration();
         initDelay();
@@ -60,6 +73,21 @@ public class SettingsActivity extends AppCompatActivity {
         initTelegramSettings();
         initSaveButton();
         loadSettings();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // Register listener when screen is visible
+        prefs.registerOnSharedPreferenceChangeListener(prefListener);
+        loadSettings(); // Ensure we have latest data when returning to screen
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        // Unregister to prevent leaks
+        prefs.unregisterOnSharedPreferenceChangeListener(prefListener);
     }
 
     private void initThresholds() {
@@ -133,7 +161,6 @@ public class SettingsActivity extends AppCompatActivity {
             SettingsManager.saveBotToken(this, token);
             SettingsManager.saveAllowedUserIds(this, idsStr);
             
-            // Restart Telegram Service logic
             Intent tgIntent = new Intent(this, TelegramService.class);
             if (!token.isEmpty() && !idsStr.isEmpty()) {
                 ContextCompat.startForegroundService(this, tgIntent);

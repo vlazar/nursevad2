@@ -114,8 +114,13 @@ public class MainActivity extends AppCompatActivity {
         
         EventBus.getInstance().getVolume().observe(this, vol -> volumeMeter.setProgress(vol));
         EventBus.getInstance().getDebug().observe(this, msg -> tvDebug.setText(msg));
-        
         EventBus.getInstance().getPlayingUri().observe(this, uri -> adapter.setPlayingUri(uri));
+        
+        // NEW: Sync button state with Service
+        EventBus.getInstance().getVadRunning().observe(this, isRunning -> {
+            this.isListening = isRunning;
+            btnStartStop.setText(isRunning ? "Stop" : "Start");
+        });
     }
 
     private void startTelegramServiceIfConfigured() {
