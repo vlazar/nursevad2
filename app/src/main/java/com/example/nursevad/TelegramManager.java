@@ -113,10 +113,22 @@ public class TelegramManager {
         sendMainMenu(message.chat().id(), message.messageId());
     }
 
+    // FIX: Made asynchronous to prevent NetworkOnMainThreadException
     private void broadcastMessage(String text) {
         Set<Long> allowedIds = SettingsManager.getAllowedUserIds(appContext);
         for (Long chatId : allowedIds) {
-            bot.execute(new SendMessage(chatId, text));
+            bot.execute(new SendMessage(chatId, text), new Callback<SendMessage, SendResponse>() {
+                @Override
+                public void onResponse(SendMessage request, SendResponse response) {
+                    if (!response.isOk()) {
+                        Log.e("TelegramManager", "Failed to broadcast: " + response.description());
+                    }
+                }
+                @Override
+                public void onFailure(SendMessage request, IOException e) {
+                    Log.e("TelegramManager", "Network error broadcasting", e);
+                }
+            });
         }
     }
 
@@ -345,11 +357,23 @@ public class TelegramManager {
         }
     }
 
+    // FIX: Made asynchronous to prevent NetworkOnMainThreadException when called from Intro/Reminder
     public void sendTextMessage(String text) {
         if (!isRunning || bot == null) return;
         Set<Long> allowedIds = SettingsManager.getAllowedUserIds(appContext);
         for (Long chatId : allowedIds) {
-            bot.execute(new SendMessage(chatId, text));
+            bot.execute(new SendMessage(chatId, text), new Callback<SendMessage, SendResponse>() {
+                @Override
+                public void onResponse(SendMessage request, SendResponse response) {
+                    if (!response.isOk()) {
+                        Log.e("TelegramManager", "Failed to send text: " + response.description());
+                    }
+                }
+                @Override
+                public void onFailure(SendMessage request, IOException e) {
+                    Log.e("TelegramManager", "Network error sending text", e);
+                }
+            });
         }
     }
 }
