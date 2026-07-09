@@ -27,6 +27,7 @@ public class MainActivity extends AppCompatActivity {
     private ProgressBar volumeMeter;
     private RecyclerView recyclerView;
     private Button btnStartStop;
+    private SwitchCompat switchSilent;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -52,6 +53,9 @@ public class MainActivity extends AppCompatActivity {
         tvDebug = findViewById(R.id.tvDebug);
         volumeMeter = findViewById(R.id.volumeMeter);
         btnStartStop = findViewById(R.id.btnStartStop);
+        switchSilent = findViewById(R.id.switchSilent);
+        switchSilent.setChecked(SettingsManager.isSilentMode(this));
+        switchSilent.setOnCheckedChangeListener((buttonView, isChecked) -> SettingsManager.saveSilentMode(this, isChecked));
         ImageButton btnClear = findViewById(R.id.btnClear);
         recyclerView = findViewById(R.id.recyclerView);
 

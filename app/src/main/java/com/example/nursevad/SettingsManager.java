@@ -73,4 +73,20 @@ public class SettingsManager {
     public static void saveAllowedUserIds(Context context, String idsString) {
         getPrefs(context).edit().putString(KEY_USER_IDS, idsString).commit();
     }
+
+    public static boolean isSilentMode(Context context) { return getPrefs(context).getBoolean("silent_mode", false); }
+    public static void saveSilentMode(Context context, boolean silent) { getPrefs(context).edit().putBoolean("silent_mode", silent).commit(); }
+
+    public static int getReminderTrigger(Context context) { return getPrefs(context).getInt("reminder_trigger", 0); }
+    public static void saveReminderTrigger(Context context, int trigger) { getPrefs(context).edit().putInt("reminder_trigger", trigger).commit(); }
+
+    public static int getReminderStartMin(Context context) { return getPrefs(context).getInt("rem_start_min", 90); }
+    public static void saveReminderStartMin(Context context, int val) { getPrefs(context).edit().putInt("rem_start_min", val).commit(); }
+    public static int getReminderStartMax(Context context) { return getPrefs(context).getInt("rem_start_max", 95); }
+    public static void saveReminderStartMax(Context context, int val) { getPrefs(context).edit().putInt("rem_start_max", val).commit(); }
+
+    public static int getReminderSpeechMin(Context context) { return getPrefs(context).getInt("rem_speech_min", 90); }
+    public static void saveReminderSpeechMin(Context context, int val) { getPrefs(context).edit().putInt("rem_speech_min", val).commit(); }
+    public static int getReminderSpeechMax(Context context) { return getPrefs(context).getInt("rem_speech_max", 120); }
+    public static void saveReminderSpeechMax(Context context, int val) { getPrefs(context).edit().putInt("rem_speech_max", val).commit(); }
 }

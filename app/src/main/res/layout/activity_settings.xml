@@ -52,6 +52,25 @@
             android:checked="true" 
             android:layout_marginBottom="16dp" />
 
+        <!-- Add this block right before the "Audio Files Folder" TextView -->
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Reminder Trigger" android:textSize="18sp" android:textStyle="bold" android:layout_marginTop="24dp" android:layout_marginBottom="8dp" />
+        <RadioGroup android:id="@+id/rgReminderTrigger" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="16dp">
+            <RadioButton android:id="@+id/rbTriggerStart" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Start" android:checked="true" />
+            <RadioButton android:id="@+id/rbTriggerSpeech" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Speech Event" android:layout_marginStart="24dp" />
+        </RadioGroup>
+
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Reminder After (Min)" android:textSize="16sp" android:layout_marginBottom="4dp" />
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical">
+            <TextView android:id="@+id/tvReminderMin" android:layout_width="64dp" android:layout_height="wrap_content" android:text="90 min" />
+            <SeekBar android:id="@+id/sbReminderMin" android:layout_width="match_parent" android:layout_height="wrap_content" />
+        </LinearLayout>
+
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Reminder After (Max)" android:textSize="16sp" android:layout_marginTop="8dp" android:layout_marginBottom="4dp" />
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginBottom="16dp">
+            <TextView android:id="@+id/tvReminderMax" android:layout_width="64dp" android:layout_height="wrap_content" android:text="95 min" />
+            <SeekBar android:id="@+id/sbReminderMax" android:layout_width="match_parent" android:layout_height="wrap_content" />
+        </LinearLayout>
+
         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Audio Files Folder" android:textSize="18sp" android:textStyle="bold" android:layout_marginTop="24dp" android:layout_marginBottom="8dp" />
         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Select a folder containing Level 1, ..., Level 5 subfolders" android:textSize="14sp" />
         <TextView android:id="@+id/tvFolderName" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="No folder selected" android:textStyle="italic" android:layout_marginTop="8dp" android:layout_marginBottom="8dp" />

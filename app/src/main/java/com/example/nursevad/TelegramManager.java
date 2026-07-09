@@ -105,7 +105,7 @@ public class TelegramManager {
                 senderName = message.from().username();
             }
             
-            broadcastMessage("▶️ Voice message received");
+            broadcastMessage("🔵 Voice Message from " + senderName);
             downloadAndQueueVoice(message.voice().fileId(), senderName);
             return;
         }
@@ -320,7 +320,7 @@ public class TelegramManager {
             else if (level == 4) emoji = "🟠";
             else if (level == 5) emoji = "🔴";
 
-            String caption = emoji + " " + (responseFileName != null ? responseFileName : "No response");
+            String caption = emoji + " " + (responseFileName != null ? responseFileName : "No file found");
 
             for (Long chatId : allowedIds) {
                 SendAudio sendAudio = new SendAudio(chatId, file)
@@ -342,6 +342,14 @@ public class TelegramManager {
             }
         } catch (Exception e) {
             Log.e("TelegramManager", "Error preparing audio file", e);
+        }
+    }
+
+    public void sendTextMessage(String text) {
+        if (!isRunning || bot == null) return;
+        Set<Long> allowedIds = SettingsManager.getAllowedUserIds(appContext);
+        for (Long chatId : allowedIds) {
+            bot.execute(new SendMessage(chatId, text));
         }
     }
 }

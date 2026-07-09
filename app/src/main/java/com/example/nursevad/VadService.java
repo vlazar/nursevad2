@@ -51,6 +51,15 @@ public class VadService extends Service {
     private Handler handler = new Handler(Looper.getMainLooper());
     private Queue<String> telegramVoiceQueue = new LinkedList<>();
 
+    // Intro & Reminder variables
+    private List<AudioFile> introFiles = new ArrayList<>();
+    private Queue<AudioFile> introQueue = new LinkedList<>();
+    private List<AudioFile> reminderFiles = new ArrayList<>();
+    private List<AudioFile> reminderQueue = new ArrayList<>();
+    private String lastPlayedReminderUri = null;
+    private Runnable reminderRunnable;
+    private boolean hasSpeechEventOccurred = false;
+
     public static void startService(Context context) {
         Intent i = new Intent(context, VadService.class);
         ContextCompat.startForegroundService(context, i);
@@ -154,7 +163,22 @@ public class VadService extends Service {
             
             loadAudioFiles();
             startRecording();
-            EventBus.getInstance().postStatus("Listening...");
+            
+            hasSpeechEventOccurred = false;
+            introQueue.clear();
+            if (introFiles != null && !introFiles.isEmpty()) {
+                introQueue.addAll(introFiles);
+                isProcessingResponse = true;
+                playNextIntro();
+            } else {
+                isProcessingResponse = false;
+                EventBus.getInstance().postStatus("Listening...");
+            }
+            
+            if (SettingsManager.getReminderTrigger(this) == 0) {
+                scheduleReminder();
+            }
+            
             EventRepository.getInstance().addEvent(new LogEvent(LogEvent.Type.START));
         }
         return START_STICKY;
@@ -313,14 +337,26 @@ public class VadService extends Service {
         
         LogEvent event = new LogEvent(LogEvent.Type.SPEECH, level, file, recordedUri);
         EventRepository.getInstance().addEvent(event);
+        hasSpeechEventOccurred = true;
         
         if (recordedFile != null && recordedFile.exists()) {
             String responseName = (file != null) ? file.displayName : null;
             TelegramManager.getInstance().sendAudioEvent(Uri.fromFile(recordedFile).toString(), level, responseName);
         }
         
+        if (SettingsManager.getReminderTrigger(this) == 1) {
+            scheduleReminder();
+        }
+        
         if (file != null) {
-            triggerPlay(file);
+            if (SettingsManager.isSilentMode(this)) {
+                isProcessingResponse = false;
+                isPaused = false;
+                EventBus.getInstance().postStatus("Listening... (Silent)");
+                if (!telegramVoiceQueue.isEmpty()) playNextTelegramVoice();
+            } else {
+                triggerPlay(file);
+            }
         } else {
             EventBus.getInstance().postStatus("Listening... (No files in Level " + level + ")");
             isProcessingResponse = false;
@@ -411,7 +447,6 @@ public class VadService extends Service {
         EventBus.getInstance().postDebug("Vol: 0% | VAD Prob: 0,000");
         EventBus.getInstance().postStatus("Playing Telegram Voice...");
         
-        // Update UI play state so the left icon turns into a Stop button
         EventBus.getInstance().postPlayingUri(Uri.fromFile(new File(path)).toString());
         
         try {
@@ -419,10 +454,106 @@ public class VadService extends Service {
             mediaPlayer = new MediaPlayer();
             mediaPlayer.setDataSource(path);
             mediaPlayer.prepare();
-            mediaPlayer.setOnCompletionListener(mp -> {
-                // File is NOT deleted here anymore so it can be replayed from the log
-                onPlaybackComplete();
-            });
+            mediaPlayer.setOnCompletionListener(mp -> onPlaybackComplete());
+            mediaPlayer.start();
+        } catch (Exception e) {
+            onPlaybackComplete();
+        }
+    }
+
+    private void playNextIntro() {
+        AudioFile file = introQueue.poll();
+        if (file == null) {
+            isProcessingResponse = false;
+            if (isRunning) EventBus.getInstance().postStatus("Listening...");
+            return;
+        }
+        
+        EventRepository.getInstance().addEvent(new LogEvent(LogEvent.Type.INTRO, file));
+        TelegramManager.getInstance().sendTextMessage("🔵 Intro " + file.displayName);
+        
+        isPaused = true;
+        isProcessingResponse = true;
+        EventBus.getInstance().postVolume(0);
+        EventBus.getInstance().postDebug("Vol: 0% | VAD Prob: 0,000");
+        EventBus.getInstance().postStatus("Playing Intro...");
+        
+        try {
+            if (mediaPlayer != null) mediaPlayer.release();
+            mediaPlayer = new MediaPlayer();
+            mediaPlayer.setDataSource(this, Uri.parse(file.uri));
+            mediaPlayer.prepare();
+            mediaPlayer.setOnCompletionListener(mp -> playNextIntro());
+            mediaPlayer.start();
+        } catch (Exception e) {
+            playNextIntro();
+        }
+    }
+
+    private void scheduleReminder() {
+        if (reminderFiles == null || reminderFiles.isEmpty()) return;
+        handler.removeCallbacks(reminderRunnable);
+        
+        int trigger = SettingsManager.getReminderTrigger(this);
+        long delayMs;
+        if (trigger == 0) {
+            int min = SettingsManager.getReminderStartMin(this);
+            int max = SettingsManager.getReminderStartMax(this);
+            if (min > max) { int t = min; min = max; max = t; }
+            int steps = (max - min) / 5;
+            int randomSteps = steps > 0 ? new Random().nextInt(steps + 1) : 0;
+            int randomMins = min + (randomSteps * 5);
+            delayMs = randomMins * 60000L;
+        } else {
+            int min = SettingsManager.getReminderSpeechMin(this);
+            int max = SettingsManager.getReminderSpeechMax(this);
+            if (min > max) { int t = min; min = max; max = t; }
+            int steps = (max - min) / 5;
+            int randomSteps = steps > 0 ? new Random().nextInt(steps + 1) : 0;
+            int randomSecs = min + (randomSteps * 5);
+            delayMs = randomSecs * 1000L;
+        }
+        
+        reminderRunnable = () -> {
+            if (trigger == 0) {
+                if (hasSpeechEventOccurred) {
+                    playReminder();
+                }
+            } else {
+                playReminder();
+            }
+        };
+        handler.postDelayed(reminderRunnable, delayMs);
+    }
+
+    private void playReminder() {
+        if (reminderFiles == null || reminderFiles.isEmpty()) return;
+        if (reminderQueue == null || reminderQueue.isEmpty()) {
+            reminderQueue = new ArrayList<>(reminderFiles);
+            Collections.shuffle(reminderQueue);
+            if (lastPlayedReminderUri != null && reminderQueue.size() > 1 && reminderQueue.get(0).uri.equals(lastPlayedReminderUri)) {
+                Collections.swap(reminderQueue, 0, 1);
+            }
+        }
+        
+        AudioFile file = reminderQueue.remove(0);
+        lastPlayedReminderUri = file.uri;
+        
+        EventRepository.getInstance().addEvent(new LogEvent(LogEvent.Type.REMINDER, file));
+        TelegramManager.getInstance().sendTextMessage("🔵 Reminder " + file.displayName);
+        
+        isPaused = true;
+        isProcessingResponse = true;
+        EventBus.getInstance().postVolume(0);
+        EventBus.getInstance().postDebug("Vol: 0% | VAD Prob: 0,000");
+        EventBus.getInstance().postStatus("Playing Reminder...");
+        
+        try {
+            if (mediaPlayer != null) mediaPlayer.release();
+            mediaPlayer = new MediaPlayer();
+            mediaPlayer.setDataSource(this, Uri.parse(file.uri));
+            mediaPlayer.prepare();
+            mediaPlayer.setOnCompletionListener(mp -> onPlaybackComplete());
             mediaPlayer.start();
         } catch (Exception e) {
             onPlaybackComplete();
@@ -458,6 +589,7 @@ public class VadService extends Service {
         DocumentFile[] rootFiles = root.listFiles();
         if (rootFiles == null) rootFiles = new DocumentFile[0];
 
+        // Load Level 1-5
         for (int i = 1; i <= 5; i++) {
             List<AudioFile> levelFilesList = new ArrayList<>();
             DocumentFile levelDir = null;
@@ -489,6 +621,55 @@ public class VadService extends Service {
             levelFiles.put(i, levelFilesList);
             debugMsg.append("L").append(i).append(":").append(levelFilesList.size()).append(" ");
         }
+        
+        // Load Intro
+        introFiles.clear();
+        DocumentFile introDir = root.findFile("Intro");
+        if (introDir == null || !introDir.isDirectory()) {
+            for (DocumentFile f : rootFiles) {
+                if (f.isDirectory() && f.getName() != null && f.getName().equalsIgnoreCase("Intro")) {
+                    introDir = f; break;
+                }
+            }
+        }
+        if (introDir != null && introDir.isDirectory()) {
+            DocumentFile[] files = introDir.listFiles();
+            if (files != null) {
+                for (DocumentFile f : files) {
+                    if (f != null && f.getName() != null && !f.getName().startsWith(".") && f.isFile()) {
+                        String name = f.getName();
+                        String cleanName = name.replaceAll("\\.[^.]+$", "").replace("_", " ").replace("-", " ").replaceAll("\\s+", " ").trim();
+                        introFiles.add(new AudioFile(f.getUri().toString(), cleanName));
+                    }
+                }
+            }
+        }
+        debugMsg.append("Intro:").append(introFiles.size()).append(" ");
+
+        // Load Reminder
+        reminderFiles.clear();
+        DocumentFile remDir = root.findFile("Reminder");
+        if (remDir == null || !remDir.isDirectory()) {
+            for (DocumentFile f : rootFiles) {
+                if (f.isDirectory() && f.getName() != null && f.getName().equalsIgnoreCase("Reminder")) {
+                    remDir = f; break;
+                }
+            }
+        }
+        if (remDir != null && remDir.isDirectory()) {
+            DocumentFile[] files = remDir.listFiles();
+            if (files != null) {
+                for (DocumentFile f : files) {
+                    if (f != null && f.getName() != null && !f.getName().startsWith(".") && f.isFile()) {
+                        String name = f.getName();
+                        String cleanName = name.replaceAll("\\.[^.]+$", "").replace("_", " ").replace("-", " ").replaceAll("\\s+", " ").trim();
+                        reminderFiles.add(new AudioFile(f.getUri().toString(), cleanName));
+                    }
+                }
+            }
+        }
+        debugMsg.append("Rem:").append(reminderFiles.size());
+
         EventBus.getInstance().postDebug("Files found -> " + debugMsg.toString());
     }
 

@@ -6,6 +6,8 @@ import android.content.SharedPreferences;
 import android.net.Uri;
 import android.os.Bundle;
 import android.widget.Button;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -31,14 +33,18 @@ public class SettingsActivity extends AppCompatActivity {
     
     private TextInputEditText etBotToken;
     private TextInputEditText etUserIds;
+
+    // Reminder UI
+    private RadioGroup rgTrigger;
+    private RadioButton rbStart, rbSpeech;
+    private SeekBar sbRemMin, sbRemMax;
+    private TextView tvRemMin, tvRemMax;
     
     private String selectedFolderUri;
     private String selectedFolderName;
 
     private SharedPreferences prefs;
     private SharedPreferences.OnSharedPreferenceChangeListener prefListener;
-    
-    // FIX: Flag to prevent listener from overwriting UI during the save process
     private boolean isSaving = false; 
 
     private final ActivityResultLauncher<Uri> folderPickerLauncher = registerForActivityResult(
@@ -62,7 +68,6 @@ public class SettingsActivity extends AppCompatActivity {
 
         prefs = getSharedPreferences("NurseVadPrefs", Context.MODE_PRIVATE);
         prefListener = (sharedPreferences, key) -> {
-            // FIX: Only reload UI if the Telegram Bot changes a setting in the background
             if (!isSaving) {
                 runOnUiThread(this::loadSettings);
             }
@@ -72,6 +77,7 @@ public class SettingsActivity extends AppCompatActivity {
         initDuration();
         initDelay();
         initWaitForEnd();
+        initReminder();
         initFolderPicker();
         initTelegramSettings();
         initSaveButton();
@@ -101,12 +107,9 @@ public class SettingsActivity extends AppCompatActivity {
             sbThresholds[i].setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
                 @Override 
                 public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { 
-                    // FIX: Snap to steps of 5
                     int snapped = Math.round(progress / 5.0f) * 5;
                     if (snapped > 100) snapped = 100;
                     if (snapped < 0) snapped = 0;
-                    
-                    // Prevent recursive calls if already snapped
                     if (progress != snapped) {
                         seekBar.setProgress(snapped);
                         return; 
@@ -133,6 +136,7 @@ public class SettingsActivity extends AppCompatActivity {
     private void initDelay() {
         sbDelay = findViewById(R.id.sbDelay);
         tvDelay = findViewById(R.id.tvDelay);
+        sbDelay.setMax(10);
         sbDelay.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { tvDelay.setText(progress + " seconds"); }
             @Override public void onStartTrackingTouch(SeekBar seekBar) {}
@@ -142,6 +146,41 @@ public class SettingsActivity extends AppCompatActivity {
 
     private void initWaitForEnd() {
         switchWaitForEnd = findViewById(R.id.switchWaitForEnd);
+    }
+
+    private void initReminder() {
+        rgTrigger = findViewById(R.id.rgReminderTrigger);
+        rbStart = findViewById(R.id.rbTriggerStart);
+        rbSpeech = findViewById(R.id.rbTriggerSpeech);
+        sbRemMin = findViewById(R.id.sbReminderMin);
+        sbRemMax = findViewById(R.id.sbReminderMax);
+        tvRemMin = findViewById(R.id.tvReminderMin);
+        tvRemMax = findViewById(R.id.tvReminderMax);
+
+        rgTrigger.setOnCheckedChangeListener((group, checkedId) -> updateReminderUI());
+
+        SeekBar.OnSeekBarChangeListener remListener = new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { updateReminderUI(); }
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+            @Override public void onStopTrackingTouch(SeekBar seekBar) {}
+        };
+        sbRemMin.setOnSeekBarChangeListener(remListener);
+        sbRemMax.setOnSeekBarChangeListener(remListener);
+    }
+
+    private void updateReminderUI() {
+        boolean isStart = rbStart.isChecked();
+        if (isStart) {
+            sbRemMin.setMax(22); // (120 - 10) / 5
+            sbRemMax.setMax(22);
+            tvRemMin.setText((sbRemMin.getProgress() * 5 + 10) + " min");
+            tvRemMax.setText((sbRemMax.getProgress() * 5 + 10) + " min");
+        } else {
+            sbRemMin.setMax(30); // (180 - 30) / 5
+            sbRemMax.setMax(30);
+            tvRemMin.setText((sbRemMin.getProgress() * 5 + 30) + " sec");
+            tvRemMax.setText((sbRemMax.getProgress() * 5 + 30) + " sec");
+        }
     }
 
     private void initFolderPicker() {
@@ -158,7 +197,7 @@ public class SettingsActivity extends AppCompatActivity {
     private void initSaveButton() {
         Button btnSave = findViewById(R.id.btnSave);
         btnSave.setOnClickListener(v -> {
-            isSaving = true; // FIX: Block listener from overwriting UI mid-save
+            isSaving = true;
             
             int[] thresholds = new int[5];
             for (int i = 0; i < 5; i++) thresholds[i] = sbThresholds[i].getProgress();
@@ -168,6 +207,15 @@ public class SettingsActivity extends AppCompatActivity {
             SettingsManager.saveDelay(this, sbDelay.getProgress());
             SettingsManager.saveWaitForEnd(this, switchWaitForEnd.isChecked());
             
+            SettingsManager.saveReminderTrigger(this, rbStart.isChecked() ? 0 : 1);
+            if (rbStart.isChecked()) {
+                SettingsManager.saveReminderStartMin(this, sbRemMin.getProgress() * 5 + 10);
+                SettingsManager.saveReminderStartMax(this, sbRemMax.getProgress() * 5 + 10);
+            } else {
+                SettingsManager.saveReminderSpeechMin(this, sbRemMin.getProgress() * 5 + 30);
+                SettingsManager.saveReminderSpeechMax(this, sbRemMax.getProgress() * 5 + 30);
+            }
+
             if (selectedFolderUri != null) SettingsManager.saveFolder(this, selectedFolderUri, selectedFolderName);
             
             String token = etBotToken.getText() != null ? etBotToken.getText().toString().trim() : "";
@@ -184,8 +232,7 @@ public class SettingsActivity extends AppCompatActivity {
                 startService(tgIntent);
             }
             
-            isSaving = false; // FIX: Re-enable listener
-            
+            isSaving = false;
             Toast.makeText(this, "Settings Saved", Toast.LENGTH_SHORT).show();
             finish();
         });
@@ -207,14 +254,24 @@ public class SettingsActivity extends AppCompatActivity {
 
         switchWaitForEnd.setChecked(SettingsManager.getWaitForEnd(this));
 
+        int trigger = SettingsManager.getReminderTrigger(this);
+        if (trigger == 0) rbStart.setChecked(true); else rbSpeech.setChecked(true);
+        
+        if (rbStart.isChecked()) {
+            sbRemMin.setProgress((SettingsManager.getReminderStartMin(this) - 10) / 5);
+            sbRemMax.setProgress((SettingsManager.getReminderStartMax(this) - 10) / 5);
+        } else {
+            sbRemMin.setProgress((SettingsManager.getReminderSpeechMin(this) - 30) / 5);
+            sbRemMax.setProgress((SettingsManager.getReminderSpeechMax(this) - 30) / 5);
+        }
+        updateReminderUI();
+
         String folderName = SettingsManager.getFolderName(this);
         selectedFolderUri = SettingsManager.getFolderUri(this);
         selectedFolderName = folderName;
         tvFolderName.setText(folderName != null ? folderName : "No folder selected");
         
-        if (!etBotToken.hasFocus()) {
-            etBotToken.setText(SettingsManager.getBotToken(this));
-        }
+        if (!etBotToken.hasFocus()) etBotToken.setText(SettingsManager.getBotToken(this));
         if (!etUserIds.hasFocus()) {
             Set<Long> ids = SettingsManager.getAllowedUserIds(this);
             StringBuilder sb = new StringBuilder();
