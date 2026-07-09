@@ -13,6 +13,7 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.appcompat.widget.SwitchCompat; // FIX: Added missing import
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.recyclerview.widget.LinearLayoutManager;
@@ -53,11 +54,13 @@ public class MainActivity extends AppCompatActivity {
         tvDebug = findViewById(R.id.tvDebug);
         volumeMeter = findViewById(R.id.volumeMeter);
         btnStartStop = findViewById(R.id.btnStartStop);
+        ImageButton btnClear = findViewById(R.id.btnClear);
+        recyclerView = findViewById(R.id.recyclerView);
+        
+        // Initialize Silent Mode Toggle
         switchSilent = findViewById(R.id.switchSilent);
         switchSilent.setChecked(SettingsManager.isSilentMode(this));
         switchSilent.setOnCheckedChangeListener((buttonView, isChecked) -> SettingsManager.saveSilentMode(this, isChecked));
-        ImageButton btnClear = findViewById(R.id.btnClear);
-        recyclerView = findViewById(R.id.recyclerView);
 
         if (isListening) {
             btnStartStop.setText("Stop");
@@ -120,7 +123,7 @@ public class MainActivity extends AppCompatActivity {
         EventBus.getInstance().getDebug().observe(this, msg -> tvDebug.setText(msg));
         EventBus.getInstance().getPlayingUri().observe(this, uri -> adapter.setPlayingUri(uri));
         
-        // NEW: Sync button state with Service
+        // Sync button state with Service
         EventBus.getInstance().getVadRunning().observe(this, isRunning -> {
             this.isListening = isRunning;
             btnStartStop.setText(isRunning ? "Stop" : "Start");
