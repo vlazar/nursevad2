@@ -1,7 +1,10 @@
 package com.example.nursevad;
 
+import java.util.UUID;
+
 public class LogEvent {
     public enum Type { SPEECH, START, STOP, TELEGRAM_VOICE, INTRO, REMINDER }
+    public String id; // Unique ID for DiffUtil
     public Type type;
     public long timestamp;
     public int level;
@@ -11,11 +14,13 @@ public class LogEvent {
     public String senderName; 
 
     public LogEvent(Type type) {
+        this.id = UUID.randomUUID().toString();
         this.type = type;
         this.timestamp = System.currentTimeMillis();
     }
 
     public LogEvent(Type type, int level, AudioFile audioFile, String recordedSpeechUri) {
+        this.id = UUID.randomUUID().toString();
         this.type = type;
         this.level = level;
         this.timestamp = System.currentTimeMillis();
@@ -30,6 +35,7 @@ public class LogEvent {
     }
 
     public LogEvent(Type type, String filePath, String senderName) {
+        this.id = UUID.randomUUID().toString();
         this.type = type;
         this.timestamp = System.currentTimeMillis();
         this.recordedSpeechUri = android.net.Uri.fromFile(new java.io.File(filePath)).toString();
@@ -37,8 +43,8 @@ public class LogEvent {
         this.displayName = "Voice Message";
     }
 
-    // Constructor for Intro and Reminder
     public LogEvent(Type type, AudioFile file) {
+        this.id = UUID.randomUUID().toString();
         this.type = type;
         this.timestamp = System.currentTimeMillis();
         this.displayName = file.displayName;

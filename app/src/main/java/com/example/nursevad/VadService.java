@@ -51,7 +51,6 @@ public class VadService extends Service {
     private Handler handler = new Handler(Looper.getMainLooper());
     private Queue<String> telegramVoiceQueue = new LinkedList<>();
 
-    // Intro & Reminder variables
     private List<AudioFile> introFiles = new ArrayList<>();
     private Queue<AudioFile> introQueue = new LinkedList<>();
     private List<AudioFile> reminderFiles = new ArrayList<>();
@@ -465,6 +464,7 @@ public class VadService extends Service {
         AudioFile file = introQueue.poll();
         if (file == null) {
             isProcessingResponse = false;
+            isPaused = false; // FIX: Resume audio processing after Intro finishes
             if (isRunning) EventBus.getInstance().postStatus("Listening...");
             return;
         }
@@ -589,7 +589,6 @@ public class VadService extends Service {
         DocumentFile[] rootFiles = root.listFiles();
         if (rootFiles == null) rootFiles = new DocumentFile[0];
 
-        // Load Level 1-5
         for (int i = 1; i <= 5; i++) {
             List<AudioFile> levelFilesList = new ArrayList<>();
             DocumentFile levelDir = null;
@@ -622,7 +621,6 @@ public class VadService extends Service {
             debugMsg.append("L").append(i).append(":").append(levelFilesList.size()).append(" ");
         }
         
-        // Load Intro
         introFiles.clear();
         DocumentFile introDir = root.findFile("Intro");
         if (introDir == null || !introDir.isDirectory()) {
@@ -646,7 +644,6 @@ public class VadService extends Service {
         }
         debugMsg.append("Intro:").append(introFiles.size()).append(" ");
 
-        // Load Reminder
         reminderFiles.clear();
         DocumentFile remDir = root.findFile("Reminder");
         if (remDir == null || !remDir.isDirectory()) {

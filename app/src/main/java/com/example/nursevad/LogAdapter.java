@@ -27,8 +27,18 @@ public class LogAdapter extends ListAdapter<LogEvent, LogAdapter.ViewHolder> {
 
     public LogAdapter(OnPlayClickListener listener) {
         super(new DiffUtil.ItemCallback<LogEvent>() {
-            @Override public boolean areItemsTheSame(@NonNull LogEvent oldItem, @NonNull LogEvent newItem) { return oldItem.timestamp == newItem.timestamp && oldItem.type == newItem.type; }
-            @Override public boolean areContentsTheSame(@NonNull LogEvent oldItem, @NonNull LogEvent newItem) { return oldItem.timestamp == newItem.timestamp && oldItem.type == newItem.type && oldItem.level == newItem.level && (oldItem.displayName != null ? oldItem.displayName.equals(newItem.displayName) : newItem.displayName == null); }
+            @Override 
+            public boolean areItemsTheSame(@NonNull LogEvent oldItem, @NonNull LogEvent newItem) { 
+                return oldItem.id.equals(newItem.id); 
+            }
+            @Override 
+            public boolean areContentsTheSame(@NonNull LogEvent oldItem, @NonNull LogEvent newItem) { 
+                return oldItem.id.equals(newItem.id) && 
+                       oldItem.type == newItem.type && 
+                       oldItem.level == newItem.level && 
+                       (oldItem.displayName != null ? oldItem.displayName.equals(newItem.displayName) : newItem.displayName == null) &&
+                       (oldItem.recordedSpeechUri != null ? oldItem.recordedSpeechUri.equals(newItem.recordedSpeechUri) : newItem.recordedSpeechUri == null);
+            }
         });
         this.listener = listener;
     }
