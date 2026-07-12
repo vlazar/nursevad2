@@ -57,7 +57,9 @@ public class VadService extends Service {
     private List<AudioFile> reminderQueue = new ArrayList<>();
     private String lastPlayedReminderUri = null;
     private Runnable reminderRunnable;
-    private boolean hasSpeechEventOccurred = false;
+    
+    // FIX: Replaced hasSpeechEventOccurred with isReminderArmed
+    private boolean isReminderArmed = false;
 
     public static void startService(Context context) {
         Intent i = new Intent(context, VadService.class);
@@ -163,7 +165,7 @@ public class VadService extends Service {
             loadAudioFiles();
             startRecording();
             
-            hasSpeechEventOccurred = false;
+            isReminderArmed = false;
             introQueue.clear();
             if (introFiles != null && !introFiles.isEmpty()) {
                 introQueue.addAll(introFiles);
@@ -336,15 +338,21 @@ public class VadService extends Service {
         
         LogEvent event = new LogEvent(LogEvent.Type.SPEECH, level, file, recordedUri);
         EventRepository.getInstance().addEvent(event);
-        hasSpeechEventOccurred = true;
         
         if (recordedFile != null && recordedFile.exists()) {
             String responseName = (file != null) ? file.displayName : null;
             TelegramManager.getInstance().sendAudioEvent(Uri.fromFile(recordedFile).toString(), level, responseName);
         }
         
-        if (SettingsManager.getReminderTrigger(this) == 1) {
-            scheduleReminder();
+        // FIX: Reminder Logic
+        if (SettingsManager.getReminderTrigger(this) == 0) {
+            if (isReminderArmed) {
+                playReminder();
+                isReminderArmed = false;
+                scheduleReminder(); // Arm the next one
+            }
+        } else if (SettingsManager.getReminderTrigger(this) == 1) {
+            scheduleReminder(); // Reschedule timer since a new speech event occurred
         }
         
         if (file != null) {
@@ -464,7 +472,7 @@ public class VadService extends Service {
         AudioFile file = introQueue.poll();
         if (file == null) {
             isProcessingResponse = false;
-            isPaused = false; // FIX: Resume audio processing after Intro finishes
+            isPaused = false; 
             if (isRunning) EventBus.getInstance().postStatus("Listening...");
             return;
         }
@@ -504,6 +512,11 @@ public class VadService extends Service {
             int randomSteps = steps > 0 ? new Random().nextInt(steps + 1) : 0;
             int randomMins = min + (randomSteps * 5);
             delayMs = randomMins * 60000L;
+            
+            // FIX: For trigger 0, we just arm it after the delay
+            reminderRunnable = () -> {
+                isReminderArmed = true;
+            };
         } else {
             int min = SettingsManager.getReminderSpeechMin(this);
             int max = SettingsManager.getReminderSpeechMax(this);
@@ -512,17 +525,13 @@ public class VadService extends Service {
             int randomSteps = steps > 0 ? new Random().nextInt(steps + 1) : 0;
             int randomSecs = min + (randomSteps * 5);
             delayMs = randomSecs * 1000L;
+            
+            // For trigger 1, it plays immediately when timer fires
+            reminderRunnable = () -> {
+                playReminder();
+            };
         }
         
-        reminderRunnable = () -> {
-            if (trigger == 0) {
-                if (hasSpeechEventOccurred) {
-                    playReminder();
-                }
-            } else {
-                playReminder();
-            }
-        };
         handler.postDelayed(reminderRunnable, delayMs);
     }
 
