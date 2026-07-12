@@ -57,7 +57,6 @@ public class VadService extends Service {
     private List<AudioFile> reminderQueue = new ArrayList<>();
     private String lastPlayedReminderUri = null;
     
-    // FIX: Dedicated Runnables to prevent cancelling each other
     private Runnable speechDelayRunnable;
     private Runnable reminderRunnable;
     private boolean isReminderArmed = false;
@@ -166,6 +165,9 @@ public class VadService extends Service {
             loadAudioFiles();
             startRecording();
             
+            // FIX: Log START event FIRST so Intro doesn't overwrite it
+            EventRepository.getInstance().addEvent(new LogEvent(LogEvent.Type.START));
+
             isReminderArmed = false;
             introQueue.clear();
             if (introFiles != null && !introFiles.isEmpty()) {
@@ -180,8 +182,6 @@ public class VadService extends Service {
             if (SettingsManager.getReminderTrigger(this) == 0) {
                 scheduleReminder();
             }
-            
-            EventRepository.getInstance().addEvent(new LogEvent(LogEvent.Type.START));
         }
         return START_STICKY;
     }
@@ -203,13 +203,22 @@ public class VadService extends Service {
             audioRecord.startRecording();
             recordingThread = new Thread(() -> {
                 short[] buffer = new short[512];
+                int ignoreFrames = 0; // FIX: Cooldown counter to prevent speaker feedback
+                
                 while (isRunning) {
                     if (isPaused) {
                         try { Thread.sleep(100); } catch (InterruptedException e) {}
+                        ignoreFrames = 15; // Ignore ~500ms of audio after resuming
                         continue;
                     }
                     int read = audioRecord.read(buffer, 0, 512);
-                    if (read == 512) processAudio(buffer);
+                    if (read == 512) {
+                        if (ignoreFrames > 0) {
+                            ignoreFrames--;
+                            continue; // Drop buffered speaker audio
+                        }
+                        processAudio(buffer);
+                    }
                 }
             });
             recordingThread.start();
@@ -255,7 +264,6 @@ public class VadService extends Service {
             
             if (!waitForEnd) {
                 isProcessingResponse = true;
-                // FIX: Assign to specific runnable
                 speechDelayRunnable = () -> triggerResponse();
                 if (delaySec > 0) {
                     handler.postDelayed(speechDelayRunnable, delaySec * 1000L);
@@ -297,7 +305,6 @@ public class VadService extends Service {
                 
                 if (waitForEnd) {
                     isProcessingResponse = true;
-                    // FIX: Assign to specific runnable
                     speechDelayRunnable = () -> triggerResponse();
                     if (delaySec > 0) {
                         handler.postDelayed(speechDelayRunnable, delaySec * 1000L);
@@ -310,7 +317,6 @@ public class VadService extends Service {
     }
 
     private void triggerResponse() {
-        // FIX: Only cancel the speech delay, NOT the reminder timer!
         if (speechDelayRunnable != null) {
             handler.removeCallbacks(speechDelayRunnable);
             speechDelayRunnable = null;
@@ -354,15 +360,14 @@ public class VadService extends Service {
             TelegramManager.getInstance().sendAudioEvent(Uri.fromFile(recordedFile).toString(), level, responseName);
         }
         
-        // Reminder Logic
         if (SettingsManager.getReminderTrigger(this) == 0) {
             if (isReminderArmed) {
                 playReminder();
                 isReminderArmed = false;
-                scheduleReminder(); // Arm the next one
+                scheduleReminder(); 
             }
         } else if (SettingsManager.getReminderTrigger(this) == 1) {
-            scheduleReminder(); // Reschedule timer since a new speech event occurred
+            scheduleReminder(); 
         }
         
         if (file != null) {
@@ -511,7 +516,6 @@ public class VadService extends Service {
     private void scheduleReminder() {
         if (reminderFiles == null || reminderFiles.isEmpty()) return;
         
-        // FIX: Only cancel the reminder timer, not everything
         if (reminderRunnable != null) {
             handler.removeCallbacks(reminderRunnable);
         }
@@ -731,7 +735,6 @@ public class VadService extends Service {
         isVadListening = false;
         EventBus.getInstance().postVadRunning(false); 
         
-        // Safe to clear all here since the service is dying
         handler.removeCallbacksAndMessages(null);
         if (fos != null) { try { fos.close(); } catch (IOException e) {} }
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
