@@ -56,9 +56,10 @@ public class VadService extends Service {
     private List<AudioFile> reminderFiles = new ArrayList<>();
     private List<AudioFile> reminderQueue = new ArrayList<>();
     private String lastPlayedReminderUri = null;
-    private Runnable reminderRunnable;
     
-    // FIX: Replaced hasSpeechEventOccurred with isReminderArmed
+    // FIX: Dedicated Runnables to prevent cancelling each other
+    private Runnable speechDelayRunnable;
+    private Runnable reminderRunnable;
     private boolean isReminderArmed = false;
 
     public static void startService(Context context) {
@@ -254,10 +255,12 @@ public class VadService extends Service {
             
             if (!waitForEnd) {
                 isProcessingResponse = true;
+                // FIX: Assign to specific runnable
+                speechDelayRunnable = () -> triggerResponse();
                 if (delaySec > 0) {
-                    handler.postDelayed(() -> triggerResponse(), delaySec * 1000L);
+                    handler.postDelayed(speechDelayRunnable, delaySec * 1000L);
                 } else {
-                    handler.post(() -> triggerResponse());
+                    handler.post(speechDelayRunnable);
                 }
             }
         }
@@ -294,10 +297,12 @@ public class VadService extends Service {
                 
                 if (waitForEnd) {
                     isProcessingResponse = true;
+                    // FIX: Assign to specific runnable
+                    speechDelayRunnable = () -> triggerResponse();
                     if (delaySec > 0) {
-                        handler.postDelayed(() -> triggerResponse(), delaySec * 1000L);
+                        handler.postDelayed(speechDelayRunnable, delaySec * 1000L);
                     } else {
-                        handler.post(() -> triggerResponse());
+                        handler.post(speechDelayRunnable);
                     }
                 }
             }
@@ -305,14 +310,19 @@ public class VadService extends Service {
     }
 
     private void triggerResponse() {
-        handler.removeCallbacksAndMessages(null);
+        // FIX: Only cancel the speech delay, NOT the reminder timer!
+        if (speechDelayRunnable != null) {
+            handler.removeCallbacks(speechDelayRunnable);
+            speechDelayRunnable = null;
+        }
         
         long durationMs = SystemClock.elapsedRealtime() - speechStartMs;
         int thresholdSec = SettingsManager.getDurationThreshold(this);
         
         if (durationMs < thresholdSec * 1000) {
             if (isSpeaking) {
-                handler.postDelayed(() -> triggerResponse(), 100);
+                speechDelayRunnable = () -> triggerResponse();
+                handler.postDelayed(speechDelayRunnable, 100);
                 return;
             } else {
                 EventBus.getInstance().postStatus("Listening...");
@@ -344,7 +354,7 @@ public class VadService extends Service {
             TelegramManager.getInstance().sendAudioEvent(Uri.fromFile(recordedFile).toString(), level, responseName);
         }
         
-        // FIX: Reminder Logic
+        // Reminder Logic
         if (SettingsManager.getReminderTrigger(this) == 0) {
             if (isReminderArmed) {
                 playReminder();
@@ -500,7 +510,11 @@ public class VadService extends Service {
 
     private void scheduleReminder() {
         if (reminderFiles == null || reminderFiles.isEmpty()) return;
-        handler.removeCallbacks(reminderRunnable);
+        
+        // FIX: Only cancel the reminder timer, not everything
+        if (reminderRunnable != null) {
+            handler.removeCallbacks(reminderRunnable);
+        }
         
         int trigger = SettingsManager.getReminderTrigger(this);
         long delayMs;
@@ -513,7 +527,6 @@ public class VadService extends Service {
             int randomMins = min + (randomSteps * 5);
             delayMs = randomMins * 60000L;
             
-            // FIX: For trigger 0, we just arm it after the delay
             reminderRunnable = () -> {
                 isReminderArmed = true;
             };
@@ -526,7 +539,6 @@ public class VadService extends Service {
             int randomSecs = min + (randomSteps * 5);
             delayMs = randomSecs * 1000L;
             
-            // For trigger 1, it plays immediately when timer fires
             reminderRunnable = () -> {
                 playReminder();
             };
@@ -719,6 +731,7 @@ public class VadService extends Service {
         isVadListening = false;
         EventBus.getInstance().postVadRunning(false); 
         
+        // Safe to clear all here since the service is dying
         handler.removeCallbacksAndMessages(null);
         if (fos != null) { try { fos.close(); } catch (IOException e) {} }
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
