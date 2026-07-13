@@ -215,17 +215,16 @@ public class VadService extends Service {
                 int ignoreFrames = 0; 
                 
                 while (isRunning) {
-                    // FIX: Continuously read to keep hardware buffer empty of speaker audio
                     int read = audioRecord.read(buffer, 0, 512);
                     if (read == 512) {
                         if (isPaused) {
-                            ignoreFrames = 10; // Set cooldown for when we unpause
-                            continue; // Discard audio
+                            ignoreFrames = 10; 
+                            continue; 
                         }
                         
                         if (ignoreFrames > 0) {
                             ignoreFrames--;
-                            continue; // Drop frames to let acoustic echo decay
+                            continue; 
                         }
                         
                         processAudio(buffer);
@@ -347,9 +346,10 @@ public class VadService extends Service {
                 handler.postDelayed(speechDelayRunnable, 100);
                 return;
             } else {
-                EventBus.getInstance().postStatus("Listening...");
                 isProcessingResponse = false;
+                isPaused = false;
                 if (!telegramVoiceQueue.isEmpty()) playNextTelegramVoice();
+                else EventBus.getInstance().postStatus("Listening...");
                 return;
             }
         }
@@ -376,29 +376,41 @@ public class VadService extends Service {
             TelegramManager.getInstance().sendAudioEvent(Uri.fromFile(recordedFile).toString(), level, responseName);
         }
         
+        boolean playedSomething = false;
+
         if (SettingsManager.getReminderTrigger(this) == 0) {
             if (isReminderArmed) {
                 playReminder();
                 isReminderArmed = false;
                 scheduleReminder(); 
+                playedSomething = true;
             }
         } else if (SettingsManager.getReminderTrigger(this) == 1) {
             scheduleReminder(); 
         }
         
-        if (file != null) {
+        if (!playedSomething && file != null) {
             if (SettingsManager.isSilentMode(this)) {
-                isProcessingResponse = false;
-                isPaused = false;
                 EventBus.getInstance().postStatus("Listening... (Silent)");
-                if (!telegramVoiceQueue.isEmpty()) playNextTelegramVoice();
             } else {
                 triggerPlay(file);
+                playedSomething = true;
             }
-        } else {
-            EventBus.getInstance().postStatus("Listening... (No files in Level " + level + ")");
+        }
+        
+        // FIX: Only unlock the mic if NO audio was actually started
+        if (!playedSomething) {
+            isPaused = false;
             isProcessingResponse = false;
-            if (!telegramVoiceQueue.isEmpty()) playNextTelegramVoice();
+            if (!telegramVoiceQueue.isEmpty()) {
+                playNextTelegramVoice();
+            } else {
+                if (file == null) {
+                    EventBus.getInstance().postStatus("Listening... (No files in Level " + level + ")");
+                } else {
+                    EventBus.getInstance().postStatus("Listening...");
+                }
+            }
         }
     }
 

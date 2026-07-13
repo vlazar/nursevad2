@@ -6,7 +6,8 @@ import java.util.List;
 
 public class EventRepository {
     private static EventRepository instance;
-    private MutableLiveData<List<LogEvent>> liveEvents = new MutableLiveData<>(new ArrayList<>());
+    private final List<LogEvent> masterList = new ArrayList<>();
+    private final MutableLiveData<List<LogEvent>> liveEvents = new MutableLiveData<>();
 
     public static EventRepository getInstance() {
         if (instance == null) instance = new EventRepository();
@@ -15,18 +16,18 @@ public class EventRepository {
 
     public void addEvent(LogEvent event) {
         DebugLogger.log("EventRepository addEvent: " + event.type + " | ID: " + event.id);
-        List<LogEvent> current = liveEvents.getValue();
-        List<LogEvent> newList = new ArrayList<>();
-        newList.add(event); 
-        if (current != null) {
-            newList.addAll(current);
+        synchronized (masterList) {
+            masterList.add(0, event); // Add to top
+            liveEvents.postValue(new ArrayList<>(masterList)); // Post a fresh copy
         }
-        DebugLogger.log("EventRepository new list size: " + newList.size());
-        liveEvents.postValue(newList);
+        DebugLogger.log("EventRepository new list size: " + masterList.size());
     }
 
     public void clearEvents() {
-        liveEvents.postValue(new ArrayList<>());
+        synchronized (masterList) {
+            masterList.clear();
+            liveEvents.postValue(new ArrayList<>());
+        }
     }
 
     public MutableLiveData<List<LogEvent>> getLiveEvents() { return liveEvents; }
