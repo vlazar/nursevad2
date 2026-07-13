@@ -75,6 +75,9 @@ public class VadService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
+        DebugLogger.init(this);
+        DebugLogger.log("Service onCreate");
+        
         final Thread.UncaughtExceptionHandler defaultHandler = Thread.getDefaultUncaughtExceptionHandler();
         Thread.setDefaultUncaughtExceptionHandler((t, e) -> {
             try {
@@ -97,6 +100,9 @@ public class VadService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        String action = (intent != null && intent.getAction() != null) ? intent.getAction() : "null";
+        DebugLogger.log("onStartCommand called. isRunning=" + isRunning + ", action=" + action);
+
         createNotificationChannel();
         Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
                 .setContentTitle("Nurse VAD")
@@ -114,6 +120,7 @@ public class VadService extends Service {
 
         if (intent != null) {
             if ("STOP".equals(intent.getAction())) {
+                DebugLogger.log("STOP action received. Stopping service.");
                 EventBus.getInstance().postVadRunning(false); 
                 EventBus.getInstance().postVolume(0);
                 EventBus.getInstance().postDebug("Vol: 0% | VAD Prob: 0,000");
@@ -152,6 +159,7 @@ public class VadService extends Service {
         }
 
         if (!isRunning) {
+            DebugLogger.log("Initializing VAD loop and adding START event.");
             isRunning = true;
             isVadListening = true;
             EventBus.getInstance().postVadRunning(true); 
@@ -165,7 +173,6 @@ public class VadService extends Service {
             loadAudioFiles();
             startRecording();
             
-            // FIX: Log START event FIRST so Intro doesn't overwrite it
             EventRepository.getInstance().addEvent(new LogEvent(LogEvent.Type.START));
 
             isReminderArmed = false;
@@ -182,6 +189,8 @@ public class VadService extends Service {
             if (SettingsManager.getReminderTrigger(this) == 0) {
                 scheduleReminder();
             }
+        } else {
+            DebugLogger.log("Service already running. Ignoring start command.");
         }
         return START_STICKY;
     }
@@ -203,26 +212,30 @@ public class VadService extends Service {
             audioRecord.startRecording();
             recordingThread = new Thread(() -> {
                 short[] buffer = new short[512];
-                int ignoreFrames = 0; // FIX: Cooldown counter to prevent speaker feedback
+                int ignoreFrames = 0; 
                 
                 while (isRunning) {
-                    if (isPaused) {
-                        try { Thread.sleep(100); } catch (InterruptedException e) {}
-                        ignoreFrames = 15; // Ignore ~500ms of audio after resuming
-                        continue;
-                    }
+                    // FIX: Continuously read to keep hardware buffer empty of speaker audio
                     int read = audioRecord.read(buffer, 0, 512);
                     if (read == 512) {
+                        if (isPaused) {
+                            ignoreFrames = 10; // Set cooldown for when we unpause
+                            continue; // Discard audio
+                        }
+                        
                         if (ignoreFrames > 0) {
                             ignoreFrames--;
-                            continue; // Drop buffered speaker audio
+                            continue; // Drop frames to let acoustic echo decay
                         }
+                        
                         processAudio(buffer);
                     }
                 }
             });
             recordingThread.start();
-        } catch (Exception e) {}
+        } catch (Exception e) {
+            DebugLogger.log("startRecording exception: " + e.getMessage());
+        }
     }
 
     private void processAudio(short[] chunk) {
@@ -248,6 +261,7 @@ public class VadService extends Service {
         EventBus.getInstance().postDebug("Vol: " + percent + "% | VAD Prob: " + probStr);
 
         if (prob > 0.5 && !isSpeaking && !isProcessingResponse) {
+            DebugLogger.log("Speech START detected. prob=" + prob);
             isSpeaking = true;
             speechEnded = false;
             speechStartMs = SystemClock.elapsedRealtime();
@@ -289,6 +303,7 @@ public class VadService extends Service {
             else silenceFrames = 0;
 
             if (silenceFrames > 15 && !speechEnded) {
+                DebugLogger.log("Speech END detected. silenceFrames=" + silenceFrames);
                 speechEnded = true;
                 isSpeaking = false;
                 
@@ -317,6 +332,7 @@ public class VadService extends Service {
     }
 
     private void triggerResponse() {
+        DebugLogger.log("triggerResponse called. isSpeaking=" + isSpeaking + ", isReminderArmed=" + isReminderArmed);
         if (speechDelayRunnable != null) {
             handler.removeCallbacks(speechDelayRunnable);
             speechDelayRunnable = null;
@@ -397,6 +413,7 @@ public class VadService extends Service {
 
     private void triggerPlay(AudioFile file) {
         if (file == null) return;
+        DebugLogger.log("triggerPlay: " + file.displayName);
         isPaused = true;
         
         EventBus.getInstance().postVolume(0);
@@ -445,6 +462,7 @@ public class VadService extends Service {
     }
 
     private void onPlaybackComplete() {
+        DebugLogger.log("onPlaybackComplete. Queue empty=" + telegramVoiceQueue.isEmpty());
         if (!telegramVoiceQueue.isEmpty()) {
             playNextTelegramVoice();
         } else {
@@ -485,6 +503,7 @@ public class VadService extends Service {
 
     private void playNextIntro() {
         AudioFile file = introQueue.poll();
+        DebugLogger.log("playNextIntro: " + (file != null ? file.displayName : "null"));
         if (file == null) {
             isProcessingResponse = false;
             isPaused = false; 
@@ -532,6 +551,7 @@ public class VadService extends Service {
             delayMs = randomMins * 60000L;
             
             reminderRunnable = () -> {
+                DebugLogger.log("Reminder Timer FIRED (Trigger=Start). Arming reminder.");
                 isReminderArmed = true;
             };
         } else {
@@ -544,10 +564,11 @@ public class VadService extends Service {
             delayMs = randomSecs * 1000L;
             
             reminderRunnable = () -> {
+                DebugLogger.log("Reminder Timer FIRED (Trigger=Speech). Playing reminder.");
                 playReminder();
             };
         }
-        
+        DebugLogger.log("scheduleReminder called. Delay=" + delayMs + "ms");
         handler.postDelayed(reminderRunnable, delayMs);
     }
 
@@ -563,6 +584,7 @@ public class VadService extends Service {
         
         AudioFile file = reminderQueue.remove(0);
         lastPlayedReminderUri = file.uri;
+        DebugLogger.log("playReminder: " + file.displayName);
         
         EventRepository.getInstance().addEvent(new LogEvent(LogEvent.Type.REMINDER, file));
         TelegramManager.getInstance().sendTextMessage("🔵 Reminder " + file.displayName);
@@ -731,6 +753,7 @@ public class VadService extends Service {
 
     @Override
     public void onDestroy() {
+        DebugLogger.log("Service onDestroy");
         isRunning = false;
         isVadListening = false;
         EventBus.getInstance().postVadRunning(false); 

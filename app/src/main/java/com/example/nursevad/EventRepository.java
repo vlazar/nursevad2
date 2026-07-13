@@ -14,15 +14,14 @@ public class EventRepository {
     }
 
     public void addEvent(LogEvent event) {
+        DebugLogger.log("EventRepository addEvent: " + event.type + " | ID: " + event.id);
         List<LogEvent> current = liveEvents.getValue();
         List<LogEvent> newList = new ArrayList<>();
-        
-        // Add new event at the TOP (index 0)
         newList.add(event); 
-        
         if (current != null) {
             newList.addAll(current);
         }
+        DebugLogger.log("EventRepository new list size: " + newList.size());
         liveEvents.postValue(newList);
     }
 
