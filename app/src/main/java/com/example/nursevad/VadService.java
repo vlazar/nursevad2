@@ -139,6 +139,11 @@ public class VadService extends Service {
                     LogEvent event = new LogEvent(LogEvent.Type.TELEGRAM_VOICE, path, sender != null ? sender : "Telegram Bot");
                     EventRepository.getInstance().addEvent(event);
                     
+                    // FIX: Reset reminder timer on Voice Message event
+                    if (SettingsManager.getReminderTrigger(this) == 1) {
+                        scheduleReminder();
+                    }
+                    
                     telegramVoiceQueue.add(path);
                     if (!isProcessingResponse && (mediaPlayer == null || !mediaPlayer.isPlaying())) {
                         playNextTelegramVoice();
@@ -186,7 +191,9 @@ public class VadService extends Service {
                 EventBus.getInstance().postStatus("Listening...");
             }
             
-            if (SettingsManager.getReminderTrigger(this) == 0) {
+            // FIX: Schedule reminder on Start for both Trigger 0 and Trigger 1
+            int reminderTrigger = SettingsManager.getReminderTrigger(this);
+            if (reminderTrigger == 0 || reminderTrigger == 1) {
                 scheduleReminder();
             }
         } else {
@@ -386,6 +393,7 @@ public class VadService extends Service {
                 playedSomething = true;
             }
         } else if (SettingsManager.getReminderTrigger(this) == 1) {
+            // Reset timer on Speech Event
             scheduleReminder(); 
         }
         
@@ -398,7 +406,6 @@ public class VadService extends Service {
             }
         }
         
-        // FIX: Only unlock the mic if NO audio was actually started
         if (!playedSomething) {
             isPaused = false;
             isProcessingResponse = false;
@@ -612,10 +619,20 @@ public class VadService extends Service {
             mediaPlayer = new MediaPlayer();
             mediaPlayer.setDataSource(this, Uri.parse(file.uri));
             mediaPlayer.prepare();
-            mediaPlayer.setOnCompletionListener(mp -> onPlaybackComplete());
+            mediaPlayer.setOnCompletionListener(mp -> {
+                onPlaybackComplete();
+                // FIX: Reset timer after Reminder finishes playing
+                if (SettingsManager.getReminderTrigger(this) == 1) {
+                    scheduleReminder();
+                }
+            });
             mediaPlayer.start();
         } catch (Exception e) {
             onPlaybackComplete();
+            // FIX: Reset timer even if playback fails
+            if (SettingsManager.getReminderTrigger(this) == 1) {
+                scheduleReminder();
+            }
         }
     }
 
