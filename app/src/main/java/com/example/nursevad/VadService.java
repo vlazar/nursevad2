@@ -139,11 +139,6 @@ public class VadService extends Service {
                     LogEvent event = new LogEvent(LogEvent.Type.TELEGRAM_VOICE, path, sender != null ? sender : "Telegram Bot");
                     EventRepository.getInstance().addEvent(event);
                     
-                    // FIX: Reset reminder timer when Voice Message is received
-                    if (SettingsManager.getReminderTrigger(this) == 1) {
-                        scheduleReminder();
-                    }
-                    
                     telegramVoiceQueue.add(path);
                     if (!isProcessingResponse && (mediaPlayer == null || !mediaPlayer.isPlaying())) {
                         playNextTelegramVoice();
@@ -191,7 +186,7 @@ public class VadService extends Service {
                 EventBus.getInstance().postStatus("Listening...");
             }
             
-            // FIX: Schedule reminder on Start for BOTH Trigger 0 and Trigger 1
+            // FIX: Start reminder timer for BOTH triggers when app starts
             scheduleReminder();
         } else {
             DebugLogger.log("Service already running. Ignoring start command.");
@@ -390,7 +385,7 @@ public class VadService extends Service {
                 playedSomething = true;
             }
         } else if (SettingsManager.getReminderTrigger(this) == 1) {
-            // Reset timer on Speech Event
+            // FIX: Reset timer after speech event for Trigger 1
             scheduleReminder(); 
         }
         
@@ -510,7 +505,13 @@ public class VadService extends Service {
             mediaPlayer = new MediaPlayer();
             mediaPlayer.setDataSource(path);
             mediaPlayer.prepare();
-            mediaPlayer.setOnCompletionListener(mp -> onPlaybackComplete());
+            // FIX: Reset timer after Voice Message fully played for Trigger 1
+            mediaPlayer.setOnCompletionListener(mp -> {
+                onPlaybackComplete();
+                if (isRunning && SettingsManager.getReminderTrigger(this) == 1) {
+                    scheduleReminder();
+                }
+            });
             mediaPlayer.start();
         } catch (Exception e) {
             onPlaybackComplete();
@@ -549,6 +550,7 @@ public class VadService extends Service {
     }
 
     private void scheduleReminder() {
+        if (!isRunning) return; // Safety check to prevent firing after stop
         if (reminderFiles == null || reminderFiles.isEmpty()) return;
         
         if (reminderRunnable != null) {
@@ -616,18 +618,15 @@ public class VadService extends Service {
             mediaPlayer = new MediaPlayer();
             mediaPlayer.setDataSource(this, Uri.parse(file.uri));
             mediaPlayer.prepare();
+            // FIX: Reset timer after Reminder fully played for Trigger 1
             mediaPlayer.setOnCompletionListener(mp -> {
-                // FIX: Reset timer exactly when Reminder finishes playing
-                if (SettingsManager.getReminderTrigger(this) == 1) {
+                onPlaybackComplete();
+                if (isRunning && SettingsManager.getReminderTrigger(this) == 1) {
                     scheduleReminder();
                 }
-                onPlaybackComplete();
             });
             mediaPlayer.start();
         } catch (Exception e) {
-            if (SettingsManager.getReminderTrigger(this) == 1) {
-                scheduleReminder();
-            }
             onPlaybackComplete();
         }
     }
