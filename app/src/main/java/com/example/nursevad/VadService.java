@@ -121,7 +121,6 @@ public class VadService extends Service {
         if (intent != null) {
             if ("STOP".equals(intent.getAction())) {
                 DebugLogger.log("STOP action received. Stopping service and canceling timers.");
-                // FIX: Explicitly cancel the reminder timer on Stop
                 if (reminderRunnable != null) handler.removeCallbacks(reminderRunnable);
                 
                 EventBus.getInstance().postVadRunning(false); 
@@ -205,6 +204,21 @@ public class VadService extends Service {
         stopSelf();
     }
 
+    // --- Helper Methods for Reminder Timer Pause/Resume ---
+    private void pauseReminderTimer() {
+        if (SettingsManager.getReminderTrigger(this) == 1 && reminderRunnable != null) {
+            handler.removeCallbacks(reminderRunnable);
+            DebugLogger.log("Reminder timer PAUSED (Trigger=1).");
+        }
+    }
+
+    private void resumeReminderTimer() {
+        if (SettingsManager.getReminderTrigger(this) == 1 && isRunning) {
+            scheduleReminder();
+            DebugLogger.log("Reminder timer RESUMED (Trigger=1).");
+        }
+    }
+
     private void startRecording() {
         try {
             int bufferSize = AudioRecord.getMinBufferSize(16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
@@ -269,6 +283,9 @@ public class VadService extends Service {
             speechEnded = false;
             speechStartMs = SystemClock.elapsedRealtime();
             accumulatedRms = 0; frameCount = 0; silenceFrames = 0;
+            
+            // FIX: Pause reminder timer immediately when speech starts
+            pauseReminderTimer();
             
             try {
                 recordedFile = new File(getCacheDir(), "speech_" + speechStartMs + ".wav");
@@ -352,8 +369,13 @@ public class VadService extends Service {
             } else {
                 isProcessingResponse = false;
                 isPaused = false;
-                if (!telegramVoiceQueue.isEmpty()) playNextTelegramVoice();
-                else EventBus.getInstance().postStatus("Listening...");
+                if (!telegramVoiceQueue.isEmpty()) {
+                    playNextTelegramVoice();
+                } else {
+                    EventBus.getInstance().postStatus("Listening...");
+                    // FIX: Resume timer if short speech ends and no audio is queued
+                    resumeReminderTimer();
+                }
                 return;
             }
         }
@@ -390,8 +412,8 @@ public class VadService extends Service {
                 playedSomething = true;
             }
         } else if (SettingsManager.getReminderTrigger(this) == 1) {
-            // FIX: Reset the recurring timer because a speech event just ended
-            scheduleReminder();
+            // FIX: Resume timer because speech event ended
+            resumeReminderTimer();
         }
         
         if (!playedSomething && file != null) {
@@ -414,6 +436,8 @@ public class VadService extends Service {
                 } else {
                     EventBus.getInstance().postStatus("Listening...");
                 }
+                // FIX: Resume timer if no audio was played
+                resumeReminderTimer();
             }
         }
     }
@@ -431,6 +455,7 @@ public class VadService extends Service {
         if (file == null) return;
         DebugLogger.log("triggerPlay: " + file.displayName);
         isPaused = true;
+        pauseReminderTimer(); // Pause timer while response audio plays
         
         EventBus.getInstance().postVolume(0);
         EventBus.getInstance().postDebug("Vol: 0% | VAD Prob: 0,000");
@@ -443,19 +468,16 @@ public class VadService extends Service {
             mediaPlayer = new MediaPlayer();
             mediaPlayer.setDataSource(this, Uri.parse(file.uri));
             mediaPlayer.prepare();
-            mediaPlayer.setOnCompletionListener(mp -> {
-                if (SettingsManager.getReminderTrigger(this) == 1) scheduleReminder();
-                onPlaybackComplete();
-            });
+            mediaPlayer.setOnCompletionListener(mp -> onPlaybackComplete());
             mediaPlayer.start();
         } catch (IOException e) {
-            if (SettingsManager.getReminderTrigger(this) == 1) scheduleReminder();
             onPlaybackComplete();
         }
     }
 
     public void playSpecificFile(String uriString) {
         isPaused = true;
+        pauseReminderTimer(); // Pause timer while recorded speech plays
         
         EventBus.getInstance().postVolume(0);
         EventBus.getInstance().postDebug("Vol: 0% | VAD Prob: 0,000");
@@ -473,14 +495,10 @@ public class VadService extends Service {
             }
             
             mediaPlayer.prepare();
-            mediaPlayer.setOnCompletionListener(mp -> {
-                if (SettingsManager.getReminderTrigger(this) == 1) scheduleReminder();
-                onPlaybackComplete();
-            });
+            mediaPlayer.setOnCompletionListener(mp -> onPlaybackComplete());
             mediaPlayer.start();
             EventBus.getInstance().postStatus("Playing recorded speech...");
         } catch (Exception e) { 
-            if (SettingsManager.getReminderTrigger(this) == 1) scheduleReminder();
             onPlaybackComplete();
         }
     }
@@ -495,6 +513,9 @@ public class VadService extends Service {
             EventBus.getInstance().postPlayingUri(null);
             if (isRunning) EventBus.getInstance().postStatus("Listening...");
             else EventBus.getInstance().postStatus("Idle");
+            
+            // FIX: Resume timer when all audio playback is completely finished
+            resumeReminderTimer();
         }
     }
 
@@ -507,6 +528,8 @@ public class VadService extends Service {
         
         isPaused = true;
         isProcessingResponse = true; 
+        pauseReminderTimer(); // Pause timer while Voice Message plays
+        
         EventBus.getInstance().postVolume(0);
         EventBus.getInstance().postDebug("Vol: 0% | VAD Prob: 0,000");
         EventBus.getInstance().postStatus("Playing Telegram Voice...");
@@ -518,18 +541,9 @@ public class VadService extends Service {
             mediaPlayer = new MediaPlayer();
             mediaPlayer.setDataSource(path);
             mediaPlayer.prepare();
-            mediaPlayer.setOnCompletionListener(mp -> {
-                // FIX: Reset timer only if this was the last voice message in the queue
-                if (SettingsManager.getReminderTrigger(this) == 1 && telegramVoiceQueue.isEmpty()) {
-                    scheduleReminder();
-                }
-                onPlaybackComplete();
-            });
+            mediaPlayer.setOnCompletionListener(mp -> onPlaybackComplete());
             mediaPlayer.start();
         } catch (Exception e) {
-            if (SettingsManager.getReminderTrigger(this) == 1 && telegramVoiceQueue.isEmpty()) {
-                scheduleReminder();
-            }
             onPlaybackComplete();
         }
     }
@@ -541,7 +555,7 @@ public class VadService extends Service {
             isProcessingResponse = false;
             isPaused = false; 
             if (isRunning) EventBus.getInstance().postStatus("Listening...");
-            if (SettingsManager.getReminderTrigger(this) == 1) scheduleReminder();
+            resumeReminderTimer(); // Resume timer when Intro sequence finishes
             return;
         }
         
@@ -550,6 +564,8 @@ public class VadService extends Service {
         
         isPaused = true;
         isProcessingResponse = true;
+        pauseReminderTimer(); // Pause timer while Intro audio plays
+        
         EventBus.getInstance().postVolume(0);
         EventBus.getInstance().postDebug("Vol: 0% | VAD Prob: 0,000");
         EventBus.getInstance().postStatus("Playing Intro...");
@@ -625,6 +641,8 @@ public class VadService extends Service {
         
         isPaused = true;
         isProcessingResponse = true;
+        pauseReminderTimer(); // Pause timer while Reminder audio plays
+        
         EventBus.getInstance().postVolume(0);
         EventBus.getInstance().postDebug("Vol: 0% | VAD Prob: 0,000");
         EventBus.getInstance().postStatus("Playing Reminder...");
@@ -634,15 +652,10 @@ public class VadService extends Service {
             mediaPlayer = new MediaPlayer();
             mediaPlayer.setDataSource(this, Uri.parse(file.uri));
             mediaPlayer.prepare();
-            
-            mediaPlayer.setOnCompletionListener(mp -> {
-                if (SettingsManager.getReminderTrigger(this) == 1) scheduleReminder();
-                onPlaybackComplete();
-            });
+            mediaPlayer.setOnCompletionListener(mp -> onPlaybackComplete());
             mediaPlayer.start();
         } catch (Exception e) {
             DebugLogger.log("playReminder exception: " + e.getMessage());
-            if (SettingsManager.getReminderTrigger(this) == 1) scheduleReminder();
             onPlaybackComplete();
         }
     }
