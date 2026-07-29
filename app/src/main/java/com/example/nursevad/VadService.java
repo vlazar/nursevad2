@@ -139,7 +139,7 @@ public class VadService extends Service {
                     LogEvent event = new LogEvent(LogEvent.Type.TELEGRAM_VOICE, path, sender != null ? sender : "Telegram Bot");
                     EventRepository.getInstance().addEvent(event);
                     
-                    // FIX: Reset reminder timer on Voice Message event
+                    // FIX: Reset reminder timer when Voice Message is received
                     if (SettingsManager.getReminderTrigger(this) == 1) {
                         scheduleReminder();
                     }
@@ -191,11 +191,8 @@ public class VadService extends Service {
                 EventBus.getInstance().postStatus("Listening...");
             }
             
-            // FIX: Schedule reminder on Start for both Trigger 0 and Trigger 1
-            int reminderTrigger = SettingsManager.getReminderTrigger(this);
-            if (reminderTrigger == 0 || reminderTrigger == 1) {
-                scheduleReminder();
-            }
+            // FIX: Schedule reminder on Start for BOTH Trigger 0 and Trigger 1
+            scheduleReminder();
         } else {
             DebugLogger.log("Service already running. Ignoring start command.");
         }
@@ -620,19 +617,18 @@ public class VadService extends Service {
             mediaPlayer.setDataSource(this, Uri.parse(file.uri));
             mediaPlayer.prepare();
             mediaPlayer.setOnCompletionListener(mp -> {
-                onPlaybackComplete();
-                // FIX: Reset timer after Reminder finishes playing
+                // FIX: Reset timer exactly when Reminder finishes playing
                 if (SettingsManager.getReminderTrigger(this) == 1) {
                     scheduleReminder();
                 }
+                onPlaybackComplete();
             });
             mediaPlayer.start();
         } catch (Exception e) {
-            onPlaybackComplete();
-            // FIX: Reset timer even if playback fails
             if (SettingsManager.getReminderTrigger(this) == 1) {
                 scheduleReminder();
             }
+            onPlaybackComplete();
         }
     }
 
