@@ -186,8 +186,11 @@ public class VadService extends Service {
                 EventBus.getInstance().postStatus("Listening...");
             }
             
-            // FIX: Start reminder timer for BOTH triggers when app starts
-            scheduleReminder();
+            // FIX: Start recurring timer for BOTH Trigger 0 (Start) and Trigger 1 (Speech Event)
+            int reminderTrigger = SettingsManager.getReminderTrigger(this);
+            if (reminderTrigger == 0 || reminderTrigger == 1) {
+                scheduleReminder();
+            }
         } else {
             DebugLogger.log("Service already running. Ignoring start command.");
         }
@@ -377,6 +380,7 @@ public class VadService extends Service {
         
         boolean playedSomething = false;
 
+        // Trigger 0 (Start) logic remains here. Trigger 1 (Speech Event) is removed as it's now an independent loop.
         if (SettingsManager.getReminderTrigger(this) == 0) {
             if (isReminderArmed) {
                 playReminder();
@@ -384,9 +388,6 @@ public class VadService extends Service {
                 scheduleReminder(); 
                 playedSomething = true;
             }
-        } else if (SettingsManager.getReminderTrigger(this) == 1) {
-            // FIX: Reset timer after speech event for Trigger 1
-            scheduleReminder(); 
         }
         
         if (!playedSomething && file != null) {
@@ -505,13 +506,7 @@ public class VadService extends Service {
             mediaPlayer = new MediaPlayer();
             mediaPlayer.setDataSource(path);
             mediaPlayer.prepare();
-            // FIX: Reset timer after Voice Message fully played for Trigger 1
-            mediaPlayer.setOnCompletionListener(mp -> {
-                onPlaybackComplete();
-                if (isRunning && SettingsManager.getReminderTrigger(this) == 1) {
-                    scheduleReminder();
-                }
-            });
+            mediaPlayer.setOnCompletionListener(mp -> onPlaybackComplete());
             mediaPlayer.start();
         } catch (Exception e) {
             onPlaybackComplete();
@@ -550,7 +545,6 @@ public class VadService extends Service {
     }
 
     private void scheduleReminder() {
-        if (!isRunning) return; // Safety check to prevent firing after stop
         if (reminderFiles == null || reminderFiles.isEmpty()) return;
         
         if (reminderRunnable != null) {
@@ -582,7 +576,7 @@ public class VadService extends Service {
             delayMs = randomSecs * 1000L;
             
             reminderRunnable = () -> {
-                DebugLogger.log("Reminder Timer FIRED (Trigger=Speech). Playing reminder.");
+                DebugLogger.log("Reminder Timer FIRED (Trigger=Speech/Recurring). Playing reminder.");
                 playReminder();
             };
         }
@@ -618,15 +612,20 @@ public class VadService extends Service {
             mediaPlayer = new MediaPlayer();
             mediaPlayer.setDataSource(this, Uri.parse(file.uri));
             mediaPlayer.prepare();
-            // FIX: Reset timer after Reminder fully played for Trigger 1
+            
+            // FIX: If Trigger is 1 (Recurring), schedule the next timer as soon as playback finishes
             mediaPlayer.setOnCompletionListener(mp -> {
-                onPlaybackComplete();
-                if (isRunning && SettingsManager.getReminderTrigger(this) == 1) {
+                if (SettingsManager.getReminderTrigger(this) == 1) {
                     scheduleReminder();
                 }
+                onPlaybackComplete();
             });
             mediaPlayer.start();
         } catch (Exception e) {
+            DebugLogger.log("playReminder exception: " + e.getMessage());
+            if (SettingsManager.getReminderTrigger(this) == 1) {
+                scheduleReminder();
+            }
             onPlaybackComplete();
         }
     }
