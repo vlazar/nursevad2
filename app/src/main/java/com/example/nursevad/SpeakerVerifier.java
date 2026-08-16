@@ -8,7 +8,6 @@ import ai.onnxruntime.*;
 import java.io.*;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.nio.FloatBuffer;
 import java.util.*;
 
 public class SpeakerVerifier {
@@ -62,38 +61,34 @@ public class SpeakerVerifier {
         DocumentFile poiDir = root.findFile("POI");
         if (poiDir != null && poiDir.isDirectory()) {
             for (DocumentFile f : poiDir.listFiles()) {
-                if (f.getName().endsWith(".npy")) poiList.add(readNpy(f));
+                if (f.getName() != null && f.getName().endsWith(".npy")) {
+                    float[][] embeddings = readNpy(f);
+                    for (float[] emb : embeddings) poiList.add(emb);
+                }
             }
         }
 
         DocumentFile poniDir = root.findFile("PONI");
         if (poniDir != null && poniDir.isDirectory()) {
             for (DocumentFile f : poniDir.listFiles()) {
-                if (f.getName().endsWith(".npy")) poniList.add(readNpy(f));
+                if (f.getName() != null && f.getName().endsWith(".npy")) {
+                    float[][] embeddings = readNpy(f);
+                    for (float[] emb : embeddings) poniList.add(emb);
+                }
             }
         }
 
-        if (!poiList.isEmpty()) poiEmbeddings = flattenList(poiList);
-        if (!poniList.isEmpty()) poniEmbeddings = flattenList(poniList);
+        if (!poiList.isEmpty()) poiEmbeddings = poiList.toArray(new float[0][]);
+        if (!poniList.isEmpty()) poniEmbeddings = poniList.toArray(new float[0][]);
+        
         Log.d("SpeakerVerifier", "Loaded POI: " + (poiEmbeddings != null ? poiEmbeddings.length : 0) + 
               ", PONI: " + (poniEmbeddings != null ? poniEmbeddings.length : 0));
-    }
-
-    private float[][] flattenList(List<float[]> list) {
-        int rows = 0;
-        for (float[] arr : list) rows += arr.length;
-        float[][] res = new float[rows][256];
-        int idx = 0;
-        for (float[] arr : list) {
-            for (float[] row : arr) res[idx++] = row;
-        }
-        return res;
     }
 
     private float[][] readNpy(DocumentFile docFile) {
         try (InputStream in = appContext.getContentResolver().openInputStream(docFile.getUri())) {
             byte[] magic = new byte[6]; in.read(magic);
-            in.skip(4); // version + header_len placeholder
+            byte[] version = new byte[2]; in.read(version);
             byte[] hl = new byte[2]; in.read(hl);
             int hLen = (hl[0] & 0xFF) | ((hl[1] & 0xFF) << 8);
             byte[] hb = new byte[hLen]; in.read(hb);
@@ -108,10 +103,20 @@ public class SpeakerVerifier {
             int cols = 256;
 
             byte[] data = new byte[rows * cols * 4];
-            in.read(data);
+            int bytesRead = 0;
+            while (bytesRead < data.length) {
+                int read = in.read(data, bytesRead, data.length - bytesRead);
+                if (read == -1) break;
+                bytesRead += read;
+            }
+            
             ByteBuffer bb = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
             float[][] res = new float[rows][cols];
-            for (int i = 0; i < rows; i++) for (int j = 0; j < cols; j++) res[i][j] = bb.getFloat();
+            for (int i = 0; i < rows; i++) {
+                for (int j = 0; j < cols; j++) {
+                    res[i][j] = bb.getFloat();
+                }
+            }
             return res;
         } catch (Exception e) {
             Log.e("SpeakerVerifier", "NPY read error", e);
@@ -120,13 +125,13 @@ public class SpeakerVerifier {
     }
 
     public boolean verify(File wavFile) {
-        if (session == null || poiEmbeddings == null) return true; // Fallback to POI if no model/embeddings
+        if (session == null || poiEmbeddings == null) return true; 
         try {
             float[] wav = loadWav(wavFile);
             float[] embed = extractEmbedding(wav);
             
             float maxPos = maxCosineSim(poiEmbeddings, embed);
-            boolean isMatch = maxPos >= 0.75f; // Default threshold from script
+            boolean isMatch = maxPos >= 0.75f; 
             
             if (isMatch && poniEmbeddings != null) {
                 float maxNeg = maxCosineSim(poniEmbeddings, embed);
@@ -142,10 +147,13 @@ public class SpeakerVerifier {
     private float maxCosineSim(float[][] refs, float[] target) {
         float max = -1;
         float tNorm = norm(target);
+        if (tNorm == 0) return -1;
         for (float[] ref : refs) {
             float dot = 0;
             for (int i = 0; i < 256; i++) dot += ref[i] * target[i];
-            float sim = dot / (norm(ref) * tNorm);
+            float rNorm = norm(ref);
+            if (rNorm == 0) continue;
+            float sim = dot / (rNorm * tNorm);
             if (sim > max) max = sim;
         }
         return max;
@@ -189,13 +197,20 @@ public class SpeakerVerifier {
             for (int i = 0; i < PARTIAL_FRAMES; i++) p[i] = melSpec[s + i];
             partials.add(p);
         }
-        if (partials.isEmpty()) partials.add(melSpec);
+        if (partials.isEmpty()) {
+            float[][] p = new float[PARTIAL_FRAMES][N_MELS];
+            for (int i = 0; i < Math.min(PARTIAL_FRAMES, melSpec.length); i++) p[i] = melSpec[i];
+            partials.add(p);
+        }
 
         float[][][] batch = new float[partials.size()][PARTIAL_FRAMES][N_MELS];
         for (int i = 0; i < partials.size(); i++) batch[i] = partials.get(i);
 
         OnnxTensor tensor = OnnxTensor.createTensor(env, batch);
-        OrtSession.Result res = session.run(Collections.singletonMap(session.getInputs().get(0).getName(), tensor));
+        
+        // FIX: Use getInputNames() instead of getInputs()
+        String inputName = session.getInputNames().iterator().next();
+        OrtSession.Result res = session.run(Collections.singletonMap(inputName, tensor));
         float[][] out = (float[][]) res.get(0).getValue();
         
         float[] embed = new float[256];
@@ -204,6 +219,10 @@ public class SpeakerVerifier {
         
         float n = norm(embed);
         if (n > 0) for (int i = 0; i < 256; i++) embed[i] /= n;
+        
+        tensor.close();
+        res.close();
+        
         return embed;
     }
 
@@ -223,12 +242,9 @@ public class SpeakerVerifier {
     }
 
     private float[][] melFilterbank() {
-        float fMin = 0, fSp = 200f / 3f, minLogHz = 1000f;
-        float minLogMel = (minLogHz - fMin) / fSp;
-        float logStep = (float) Math.log(6.4) / 27f;
         int nFreqs = N_FFT / 2 + 1;
         float[] melPts = new float[N_MELS + 2];
-        float melMin = hzToMel(fMin), melMax = hzToMel(SR / 2f);
+        float melMin = hzToMel(0), melMax = hzToMel(SR / 2f);
         for (int i = 0; i < melPts.length; i++) melPts[i] = melMin + i * (melMax - melMin) / (N_MELS + 1);
         float[] hzPts = new float[N_MELS + 2];
         for (int i = 0; i < hzPts.length; i++) hzPts[i] = melToHz(melPts[i]);
@@ -266,11 +282,23 @@ public class SpeakerVerifier {
 
     private float[] loadWav(File f) throws Exception {
         FileInputStream in = new FileInputStream(f);
-        in.skip(40); // Skip WAV header
-        byte[] data = new byte[(int) f.length() - 44];
-        in.read(data);
-        short[] shorts = new short[data.length / 2];
+        in.skip(40); // Skip to data chunk size
+        byte[] sizeBytes = new byte[4];
+        in.read(sizeBytes);
+        int dataSize = ByteBuffer.wrap(sizeBytes).order(ByteOrder.LITTLE_ENDIAN).getInt();
+        
+        byte[] data = new byte[dataSize];
+        int bytesRead = 0;
+        while (bytesRead < dataSize) {
+            int read = in.read(data, bytesRead, dataSize - bytesRead);
+            if (read == -1) break;
+            bytesRead += read;
+        }
+        in.close();
+        
+        short[] shorts = new short[dataSize / 2];
         ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(shorts);
+        
         float[] res = new float[shorts.length];
         for (int i = 0; i < shorts.length; i++) res[i] = shorts[i] / 32768f;
         return res;
