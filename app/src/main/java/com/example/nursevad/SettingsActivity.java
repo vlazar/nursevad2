@@ -26,7 +26,10 @@ public class SettingsActivity extends AppCompatActivity {
     private SeekBar sbDuration;
     private TextView tvDuration;
     private TextView tvFolderName;
-    
+
+    private TextView tvEmbeddingsFolderName;
+    private String selectedEmbeddingsUri, selectedEmbeddingsName;    
+
     private SeekBar sbDelay;
     private TextView tvDelay;
     private SwitchCompat switchWaitForEnd;
@@ -61,6 +64,19 @@ public class SettingsActivity extends AppCompatActivity {
             }
     );
 
+    private final ActivityResultLauncher<Uri> embeddingsPickerLauncher = registerForActivityResult(
+            new ActivityResultContracts.OpenDocumentTree(),
+            uri -> {
+                if (uri != null) {
+                    getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    selectedEmbeddingsUri = uri.toString();
+                    DocumentFile df = DocumentFile.fromTreeUri(this, uri);
+                    selectedEmbeddingsName = df != null ? df.getName() : "Selected Folder";
+                    tvEmbeddingsFolderName.setText(selectedEmbeddingsName);
+                }
+            }
+    );
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -79,6 +95,10 @@ public class SettingsActivity extends AppCompatActivity {
         initWaitForEnd();
         initReminder();
         initFolderPicker();
+
+        tvEmbeddingsFolderName = findViewById(R.id.tvEmbeddingsFolderName);
+        findViewById(R.id.btnSelectEmbeddingsFolder).setOnClickListener(v -> embeddingsPickerLauncher.launch(null));
+
         initTelegramSettings();
         initSaveButton();
         loadSettings();
@@ -217,6 +237,7 @@ public class SettingsActivity extends AppCompatActivity {
             }
 
             if (selectedFolderUri != null) SettingsManager.saveFolder(this, selectedFolderUri, selectedFolderName);
+            if (selectedEmbeddingsUri != null) SettingsManager.saveEmbeddingsFolder(this, selectedEmbeddingsUri, selectedEmbeddingsName);
             
             String token = etBotToken.getText() != null ? etBotToken.getText().toString().trim() : "";
             String idsStr = etUserIds.getText() != null ? etUserIds.getText().toString().trim() : "";
@@ -270,7 +291,11 @@ public class SettingsActivity extends AppCompatActivity {
         selectedFolderUri = SettingsManager.getFolderUri(this);
         selectedFolderName = folderName;
         tvFolderName.setText(folderName != null ? folderName : "No folder selected");
-        
+
+        selectedEmbeddingsUri = SettingsManager.getEmbeddingsFolderUri(this);
+        selectedEmbeddingsName = SettingsManager.getEmbeddingsFolderName(this);
+        tvEmbeddingsFolderName.setText(selectedEmbeddingsName != null ? selectedEmbeddingsName : "No folder selected");
+
         if (!etBotToken.hasFocus()) etBotToken.setText(SettingsManager.getBotToken(this));
         if (!etUserIds.hasFocus()) {
             Set<Long> ids = SettingsManager.getAllowedUserIds(this);

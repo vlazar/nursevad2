@@ -173,6 +173,13 @@ public class VadService extends Service {
             }
             
             loadAudioFiles();
+            
+            // Load Speaker Embeddings if configured
+            String embUri = SettingsManager.getEmbeddingsFolderUri(this);
+            if (embUri != null) {
+                SpeakerVerifier.getInstance(this).loadEmbeddings(embUri);
+            }
+            
             startRecording();
             
             EventRepository.getInstance().addEvent(new LogEvent(LogEvent.Type.START));
@@ -284,7 +291,6 @@ public class VadService extends Service {
             speechStartMs = SystemClock.elapsedRealtime();
             accumulatedRms = 0; frameCount = 0; silenceFrames = 0;
             
-            // FIX: Pause reminder timer immediately when speech starts
             pauseReminderTimer();
             
             try {
@@ -373,7 +379,6 @@ public class VadService extends Service {
                     playNextTelegramVoice();
                 } else {
                     EventBus.getInstance().postStatus("Listening...");
-                    // FIX: Resume timer if short speech ends and no audio is queued
                     resumeReminderTimer();
                 }
                 return;
@@ -394,52 +399,79 @@ public class VadService extends Service {
         AudioFile file = pickFile(level);
         String recordedUri = (recordedFile != null) ? Uri.fromFile(recordedFile).toString() : null;
         
-        LogEvent event = new LogEvent(LogEvent.Type.SPEECH, level, file, recordedUri);
-        EventRepository.getInstance().addEvent(event);
-        
-        if (recordedFile != null && recordedFile.exists()) {
-            String responseName = (file != null) ? file.displayName : null;
-            TelegramManager.getInstance().sendAudioEvent(Uri.fromFile(recordedFile).toString(), level, responseName);
-        }
-        
-        boolean playedSomething = false;
+        final AudioFile finalFile = file;
+        final String finalRecordedUri = recordedUri;
+        final int finalLevel = level;
 
-        if (SettingsManager.getReminderTrigger(this) == 0) {
-            if (isReminderArmed) {
-                playReminder();
-                isReminderArmed = false;
-                scheduleReminder(); 
-                playedSomething = true;
+        // Run Speaker Verification and Event Finalization on a background thread
+        Runnable finalizeEvent = () -> {
+            boolean isPoi = true;
+            String embUri = SettingsManager.getEmbeddingsFolderUri(this);
+            if (embUri != null && recordedFile != null && recordedFile.exists()) {
+                isPoi = SpeakerVerifier.getInstance(this).verify(recordedFile);
             }
-        } else if (SettingsManager.getReminderTrigger(this) == 1) {
-            // FIX: Resume timer because speech event ended
-            resumeReminderTimer();
-        }
-        
-        if (!playedSomething && file != null) {
-            if (SettingsManager.isSilentMode(this)) {
-                EventBus.getInstance().postStatus("Listening... (Silent)");
-            } else {
-                triggerPlay(file);
-                playedSomething = true;
+            
+            LogEvent event = new LogEvent(LogEvent.Type.SPEECH, finalLevel, finalFile, finalRecordedUri);
+            event.isPoni = !isPoi;
+            if (!isPoi) event.displayName = "PONI is talking";
+            
+            EventRepository.getInstance().addEvent(event);
+            
+            if (recordedFile != null && recordedFile.exists()) {
+                String responseName = isPoi ? (finalFile != null ? finalFile.displayName : null) : "PONI is talking";
+                TelegramManager.getInstance().sendAudioEvent(Uri.fromFile(recordedFile).toString(), finalLevel, responseName, !isPoi);
             }
-        }
-        
-        if (!playedSomething) {
-            isPaused = false;
-            isProcessingResponse = false;
-            if (!telegramVoiceQueue.isEmpty()) {
-                playNextTelegramVoice();
+            
+            if (isPoi) {
+                boolean playedSomething = false;
+                if (SettingsManager.getReminderTrigger(this) == 0) {
+                    if (isReminderArmed) {
+                        playReminder();
+                        isReminderArmed = false;
+                        scheduleReminder(); 
+                        playedSomething = true;
+                    }
+                } else if (SettingsManager.getReminderTrigger(this) == 1) {
+                    resumeReminderTimer();
+                }
+                
+                if (!playedSomething && finalFile != null) {
+                    if (SettingsManager.isSilentMode(this)) {
+                        EventBus.getInstance().postStatus("Listening... (Silent)");
+                    } else {
+                        triggerPlay(finalFile);
+                        playedSomething = true;
+                    }
+                }
+                
+                if (!playedSomething) {
+                    isPaused = false;
+                    isProcessingResponse = false;
+                    if (!telegramVoiceQueue.isEmpty()) {
+                        playNextTelegramVoice();
+                    } else {
+                        if (finalFile == null) {
+                            EventBus.getInstance().postStatus("Listening... (No files in Level " + finalLevel + ")");
+                        } else {
+                            EventBus.getInstance().postStatus("Listening...");
+                        }
+                        resumeReminderTimer();
+                    }
+                }
             } else {
-                if (file == null) {
-                    EventBus.getInstance().postStatus("Listening... (No files in Level " + level + ")");
+                // PONI logic: Do not play response, just resume listening
+                isPaused = false;
+                isProcessingResponse = false;
+                if (!telegramVoiceQueue.isEmpty()) {
+                    playNextTelegramVoice();
                 } else {
                     EventBus.getInstance().postStatus("Listening...");
+                    resumeReminderTimer();
                 }
-                // FIX: Resume timer if no audio was played
-                resumeReminderTimer();
             }
-        }
+        };
+
+        new Thread(finalizeEvent).start();
     }
 
     private int getLevel(int percent) {
@@ -455,7 +487,7 @@ public class VadService extends Service {
         if (file == null) return;
         DebugLogger.log("triggerPlay: " + file.displayName);
         isPaused = true;
-        pauseReminderTimer(); // Pause timer while response audio plays
+        pauseReminderTimer(); 
         
         EventBus.getInstance().postVolume(0);
         EventBus.getInstance().postDebug("Vol: 0% | VAD Prob: 0,000");
@@ -477,7 +509,7 @@ public class VadService extends Service {
 
     public void playSpecificFile(String uriString) {
         isPaused = true;
-        pauseReminderTimer(); // Pause timer while recorded speech plays
+        pauseReminderTimer(); 
         
         EventBus.getInstance().postVolume(0);
         EventBus.getInstance().postDebug("Vol: 0% | VAD Prob: 0,000");
@@ -514,7 +546,6 @@ public class VadService extends Service {
             if (isRunning) EventBus.getInstance().postStatus("Listening...");
             else EventBus.getInstance().postStatus("Idle");
             
-            // FIX: Resume timer when all audio playback is completely finished
             resumeReminderTimer();
         }
     }
@@ -528,7 +559,7 @@ public class VadService extends Service {
         
         isPaused = true;
         isProcessingResponse = true; 
-        pauseReminderTimer(); // Pause timer while Voice Message plays
+        pauseReminderTimer(); 
         
         EventBus.getInstance().postVolume(0);
         EventBus.getInstance().postDebug("Vol: 0% | VAD Prob: 0,000");
@@ -555,7 +586,7 @@ public class VadService extends Service {
             isProcessingResponse = false;
             isPaused = false; 
             if (isRunning) EventBus.getInstance().postStatus("Listening...");
-            resumeReminderTimer(); // Resume timer when Intro sequence finishes
+            resumeReminderTimer();
             return;
         }
         
@@ -564,7 +595,7 @@ public class VadService extends Service {
         
         isPaused = true;
         isProcessingResponse = true;
-        pauseReminderTimer(); // Pause timer while Intro audio plays
+        pauseReminderTimer(); 
         
         EventBus.getInstance().postVolume(0);
         EventBus.getInstance().postDebug("Vol: 0% | VAD Prob: 0,000");
@@ -641,7 +672,7 @@ public class VadService extends Service {
         
         isPaused = true;
         isProcessingResponse = true;
-        pauseReminderTimer(); // Pause timer while Reminder audio plays
+        pauseReminderTimer(); 
         
         EventBus.getInstance().postVolume(0);
         EventBus.getInstance().postDebug("Vol: 0% | VAD Prob: 0,000");

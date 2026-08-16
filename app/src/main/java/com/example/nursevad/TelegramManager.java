@@ -318,7 +318,7 @@ public class TelegramManager {
         bot.execute(new EditMessageText(chatId, messageId, text).parseMode(ParseMode.Markdown));
     }
 
-    public void sendAudioEvent(String wavUri, int level, String responseFileName) {
+    public void sendAudioEvent(String wavUri, int level, String responseFileName, boolean isPoni) {
         if (!isRunning || bot == null) return;
         Set<Long> allowedIds = SettingsManager.getAllowedUserIds(appContext);
         if (allowedIds.isEmpty()) return;
@@ -327,12 +327,8 @@ public class TelegramManager {
             File file = new File(wavUri.replace("file://", ""));
             if (!file.exists()) return;
 
-            String emoji = "🟢";
-            if (level == 3) emoji = "🌕";
-            else if (level == 4) emoji = "🟠";
-            else if (level == 5) emoji = "🔴";
-
-            String caption = emoji + " " + (responseFileName != null ? responseFileName : "No file found");
+            String emoji = isPoni ? "⚪️" : (level == 3 ? "🌕" : level == 4 ? "🟠" : level == 5 ? "🔴" : "🟢");
+            String caption = emoji + " " + (isPoni ? "PONI is talking" : (responseFileName != null ? responseFileName : "No file found"));
 
             for (Long chatId : allowedIds) {
                 SendAudio sendAudio = new SendAudio(chatId, file)

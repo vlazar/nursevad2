@@ -59,16 +59,23 @@ public class LogAdapter extends ListAdapter<LogEvent, LogAdapter.ViewHolder> {
             String time = sdf.format(new Date(event.timestamp));
             
             if (event.type == LogEvent.Type.SPEECH) {
-                swatch.setBackgroundColor(getColorForLevel(event.level)); swatch.setImageResource(0); swatch.setClickable(false);
-                tvTitle.setText(time + " - Level " + event.level); tvTitle.setTextColor(Color.BLACK); tvTitle.setTypeface(null, android.graphics.Typeface.NORMAL);
-                itemView.setBackgroundColor(Color.TRANSPARENT);
-                if (event.displayName != null && !event.displayName.isEmpty()) { tvPlayed.setText(event.displayName); tvPlayed.setVisibility(View.VISIBLE); } else tvPlayed.setVisibility(View.GONE);
-                
-                boolean isPlaying = event.recordedSpeechUri != null && event.recordedSpeechUri.equals(currentPlayingUri);
-                if (isPlaying) { btnPlay.setImageResource(R.drawable.ic_stop); btnPlay.setColorFilter(Color.parseColor("#E57373")); } 
-                else { btnPlay.setImageResource(R.drawable.ic_play); btnPlay.setColorFilter(Color.parseColor("#9E9E9E")); }
-                btnPlay.setVisibility(View.VISIBLE);
-                btnPlay.setOnClickListener(v -> { if (listener != null && event.recordedSpeechUri != null) { if (isPlaying) listener.onStopClick(); else listener.onPlayClick(event.recordedSpeechUri); } });
+                if (event.isPoni) {
+                    swatch.setBackgroundColor(Color.GRAY);
+                    tvTitle.setTextColor(Color.GRAY);
+                    tvPlayed.setTextColor(Color.GRAY);
+                    btnPlay.setVisibility(View.GONE);
+                } else {
+                    swatch.setBackgroundColor(getColorForLevel(event.level)); swatch.setImageResource(0); swatch.setClickable(false);
+                    tvTitle.setText(time + " - Level " + event.level); tvTitle.setTextColor(Color.BLACK); tvTitle.setTypeface(null, android.graphics.Typeface.NORMAL);
+                    itemView.setBackgroundColor(Color.TRANSPARENT);
+                    if (event.displayName != null && !event.displayName.isEmpty()) { tvPlayed.setText(event.displayName); tvPlayed.setVisibility(View.VISIBLE); } else tvPlayed.setVisibility(View.GONE);
+                    
+                    boolean isPlaying = event.recordedSpeechUri != null && event.recordedSpeechUri.equals(currentPlayingUri);
+                    if (isPlaying) { btnPlay.setImageResource(R.drawable.ic_stop); btnPlay.setColorFilter(Color.parseColor("#E57373")); } 
+                    else { btnPlay.setImageResource(R.drawable.ic_play); btnPlay.setColorFilter(Color.parseColor("#9E9E9E")); }
+                    btnPlay.setVisibility(View.VISIBLE);
+                    btnPlay.setOnClickListener(v -> { if (listener != null && event.recordedSpeechUri != null) { if (isPlaying) listener.onStopClick(); else listener.onPlayClick(event.recordedSpeechUri); } });
+                }
 
             } else if (event.type == LogEvent.Type.TELEGRAM_VOICE) {
                 itemView.setBackgroundColor(Color.parseColor("#E3F2FD")); swatch.setBackgroundColor(Color.TRANSPARENT);

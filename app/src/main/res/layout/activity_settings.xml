@@ -76,6 +76,11 @@
         <TextView android:id="@+id/tvFolderName" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="No folder selected" android:textStyle="italic" android:layout_marginTop="8dp" android:layout_marginBottom="8dp" />
         <Button android:id="@+id/btnSelectFolder" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Select Folder" />
 
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Speaker Embeddings Folder" android:textSize="18sp" android:textStyle="bold" android:layout_marginTop="24dp" android:layout_marginBottom="8dp" />
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Select a folder containing speaker embeddings (POI/PONI)" android:textSize="14sp" />
+        <TextView android:id="@+id/tvEmbeddingsFolderName" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="No folder selected" android:textStyle="italic" android:layout_marginTop="8dp" android:layout_marginBottom="8dp" />
+        <Button android:id="@+id/btnSelectEmbeddingsFolder" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Select Embeddings Folder" />
+
         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Telegram Bot" android:textSize="18sp" android:textStyle="bold" android:layout_marginTop="24dp" android:layout_marginBottom="8dp" />
 
         <com.google.android.material.textfield.TextInputLayout

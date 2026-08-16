@@ -16,6 +16,8 @@ public class SettingsManager {
     private static final String KEY_WAIT_FOR_END = "wait_for_end";
     private static final String KEY_BOT_TOKEN = "bot_token";
     private static final String KEY_USER_IDS = "user_ids";
+    private static final String KEY_EMBEDDINGS_URI = "embeddings_uri";
+    private static final String KEY_EMBEDDINGS_NAME = "embeddings_name";
 
     private static SharedPreferences prefs;
 
@@ -89,4 +91,10 @@ public class SettingsManager {
     public static void saveReminderSpeechMin(Context context, int val) { getPrefs(context).edit().putInt("rem_speech_min", val).commit(); }
     public static int getReminderSpeechMax(Context context) { return getPrefs(context).getInt("rem_speech_max", 120); }
     public static void saveReminderSpeechMax(Context context, int val) { getPrefs(context).edit().putInt("rem_speech_max", val).commit(); }
+
+    public static String getEmbeddingsFolderUri(Context context) { return getPrefs(context).getString(KEY_EMBEDDINGS_URI, null); }
+    public static String getEmbeddingsFolderName(Context context) { return getPrefs(context).getString(KEY_EMBEDDINGS_NAME, null); }
+    public static void saveEmbeddingsFolder(Context context, String uri, String name) {
+        getPrefs(context).edit().putString(KEY_EMBEDDINGS_URI, uri).putString(KEY_EMBEDDINGS_NAME, name).commit();
+    }
 }

@@ -12,6 +12,7 @@ public class LogEvent {
     public String displayName; 
     public String recordedSpeechUri; 
     public String senderName; 
+    public boolean isPoni = false;
 
     public LogEvent(Type type) {
         this.id = UUID.randomUUID().toString();
