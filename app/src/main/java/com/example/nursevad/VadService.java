@@ -61,6 +61,9 @@ public class VadService extends Service {
     private Runnable reminderRunnable;
     private boolean isReminderArmed = false;
 
+    private long reminderScheduledAt = 0;
+    private long reminderTotalDelayMs = 0;
+
     public static void startService(Context context) {
         Intent i = new Intent(context, VadService.class);
         ContextCompat.startForegroundService(context, i);
@@ -226,6 +229,20 @@ public class VadService extends Service {
         }
     }
 
+    private void resumeReminderTimerWithRemaining() {
+        if (SettingsManager.getReminderTrigger(this) == 1 && isRunning) {
+            long elapsed = SystemClock.elapsedRealtime() - reminderScheduledAt;
+            long remaining = reminderTotalDelayMs - elapsed;
+            if (remaining > 0) {
+                DebugLogger.log("Reminder timer resumed with remaining=" + remaining + "ms (PONI, no reset)");
+                handler.postDelayed(reminderRunnable, remaining);
+            } else {
+                DebugLogger.log("Reminder timer already expired during PONI speech. Playing now.");
+                playReminder();
+            }
+        }
+    }
+    
     private void startRecording() {
         try {
             int bufferSize = AudioRecord.getMinBufferSize(16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
@@ -472,14 +489,15 @@ public class VadService extends Service {
                     }
                 }
             } else {
-                DebugLogger.log("finalizeEvent: PONI detected. Skipping response audio.");
+                DebugLogger.log("finalizeEvent: PONI detected. Skipping response audio. NOT resetting reminder timer.");
                 isPaused = false;
                 isProcessingResponse = false;
                 if (!telegramVoiceQueue.isEmpty()) {
                     playNextTelegramVoice();
                 } else {
                     EventBus.getInstance().postStatus("Listening...");
-                    resumeReminderTimer();
+                    // PONI: do NOT reset the timer, just resume with remaining time
+                    resumeReminderTimerWithRemaining();
                 }
             }
             
@@ -664,6 +682,11 @@ public class VadService extends Service {
                 playReminder();
             };
         }
+        
+        // Track when this timer was scheduled so we can calculate remaining time
+        reminderScheduledAt = SystemClock.elapsedRealtime();
+        reminderTotalDelayMs = delayMs;
+        
         DebugLogger.log("scheduleReminder called. Delay=" + delayMs + "ms");
         handler.postDelayed(reminderRunnable, delayMs);
     }
