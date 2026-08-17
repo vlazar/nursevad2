@@ -15,15 +15,20 @@ public class EventRepository {
     }
 
     public void addEvent(LogEvent event) {
-        DebugLogger.log("EventRepository addEvent: " + event.type + " | ID: " + event.id);
+        DebugLogger.log("EventRepo ADD: type=" + event.type + " | id=" + event.id + 
+                " | ts=" + event.timestamp + " | level=" + event.level + 
+                " | isPoni=" + event.isPoni + " | display=" + event.displayName +
+                " | thread=" + Thread.currentThread().getName());
+        
         synchronized (masterList) {
-            masterList.add(0, event); // Add to top
-            liveEvents.postValue(new ArrayList<>(masterList)); // Post a fresh copy
+            masterList.add(0, event);
+            DebugLogger.log("EventRepo masterList size=" + masterList.size());
+            liveEvents.postValue(new ArrayList<>(masterList));
         }
-        DebugLogger.log("EventRepository new list size: " + masterList.size());
     }
 
     public void clearEvents() {
+        DebugLogger.log("EventRepo CLEAR");
         synchronized (masterList) {
             masterList.clear();
             liveEvents.postValue(new ArrayList<>());

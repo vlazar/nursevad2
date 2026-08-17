@@ -125,21 +125,42 @@ public class SpeakerVerifier {
     }
 
     public boolean verify(File wavFile) {
-        if (session == null || poiEmbeddings == null) return true; 
+        DebugLogger.log("SpeakerVerifier.verify: file=" + wavFile.getAbsolutePath() + 
+                ", size=" + wavFile.length() + " bytes");
+        
+        if (session == null) {
+            DebugLogger.log("SpeakerVerifier.verify: session is null, returning true (POI)");
+            return true;
+        }
+        if (poiEmbeddings == null || poiEmbeddings.length == 0) {
+            DebugLogger.log("SpeakerVerifier.verify: no POI embeddings loaded, returning true (POI)");
+            return true;
+        }
+        
         try {
             float[] wav = loadWav(wavFile);
+            DebugLogger.log("SpeakerVerifier.verify: loaded " + wav.length + " samples");
+            
             float[] embed = extractEmbedding(wav);
+            DebugLogger.log("SpeakerVerifier.verify: extracted embedding");
             
             float maxPos = maxCosineSim(poiEmbeddings, embed);
+            DebugLogger.log("SpeakerVerifier.verify: maxPos=" + maxPos);
             boolean isMatch = maxPos >= 0.75f; 
             
-            if (isMatch && poniEmbeddings != null) {
+            if (isMatch && poniEmbeddings != null && poniEmbeddings.length > 0) {
                 float maxNeg = maxCosineSim(poniEmbeddings, embed);
-                if (maxNeg >= 0.75f) isMatch = false;
+                DebugLogger.log("SpeakerVerifier.verify: maxNeg=" + maxNeg);
+                if (maxNeg >= 0.75f) {
+                    isMatch = false;
+                    DebugLogger.log("SpeakerVerifier.verify: PONI veto applied!");
+                }
             }
+            
+            DebugLogger.log("SpeakerVerifier.verify: final result isMatch=" + isMatch);
             return isMatch;
         } catch (Exception e) {
-            Log.e("SpeakerVerifier", "Verify error", e);
+            DebugLogger.log("SpeakerVerifier.verify: EXCEPTION " + e.getMessage());
             return true;
         }
     }

@@ -402,27 +402,40 @@ public class VadService extends Service {
         final AudioFile finalFile = file;
         final String finalRecordedUri = recordedUri;
         final int finalLevel = level;
+        final File finalRecordedFile = recordedFile;
 
-        // Run Speaker Verification and Event Finalization on a background thread
+        DebugLogger.log("triggerResponse: level=" + level + ", file=" + (file != null ? file.displayName : "null") + 
+                ", recordedFile=" + (recordedFile != null ? recordedFile.getAbsolutePath() : "null"));
+
         Runnable finalizeEvent = () -> {
+            DebugLogger.log("finalizeEvent START. thread=" + Thread.currentThread().getName());
+            
             boolean isPoi = true;
             String embUri = SettingsManager.getEmbeddingsFolderUri(this);
-            if (embUri != null && recordedFile != null && recordedFile.exists()) {
-                isPoi = SpeakerVerifier.getInstance(this).verify(recordedFile);
+            if (embUri != null && finalRecordedFile != null && finalRecordedFile.exists()) {
+                DebugLogger.log("finalizeEvent: Running speaker verification...");
+                isPoi = SpeakerVerifier.getInstance(this).verify(finalRecordedFile);
+                DebugLogger.log("finalizeEvent: Verification result isPoi=" + isPoi);
+            } else {
+                DebugLogger.log("finalizeEvent: No embeddings folder or no recorded file. Skipping verification.");
             }
             
             LogEvent event = new LogEvent(LogEvent.Type.SPEECH, finalLevel, finalFile, finalRecordedUri);
             event.isPoni = !isPoi;
             if (!isPoi) event.displayName = "PONI is talking";
             
+            DebugLogger.log("finalizeEvent: Adding SPEECH event. isPoni=" + event.isPoni + 
+                    ", level=" + event.level + ", display=" + event.displayName);
+            
             EventRepository.getInstance().addEvent(event);
             
-            if (recordedFile != null && recordedFile.exists()) {
+            if (finalRecordedFile != null && finalRecordedFile.exists()) {
                 String responseName = isPoi ? (finalFile != null ? finalFile.displayName : null) : "PONI is talking";
-                TelegramManager.getInstance().sendAudioEvent(Uri.fromFile(recordedFile).toString(), finalLevel, responseName, !isPoi);
+                TelegramManager.getInstance().sendAudioEvent(Uri.fromFile(finalRecordedFile).toString(), finalLevel, responseName, !isPoi);
             }
             
             if (isPoi) {
+                DebugLogger.log("finalizeEvent: POI detected. Proceeding with normal response.");
                 boolean playedSomething = false;
                 if (SettingsManager.getReminderTrigger(this) == 0) {
                     if (isReminderArmed) {
@@ -459,7 +472,7 @@ public class VadService extends Service {
                     }
                 }
             } else {
-                // PONI logic: Do not play response, just resume listening
+                DebugLogger.log("finalizeEvent: PONI detected. Skipping response audio.");
                 isPaused = false;
                 isProcessingResponse = false;
                 if (!telegramVoiceQueue.isEmpty()) {
@@ -469,6 +482,8 @@ public class VadService extends Service {
                     resumeReminderTimer();
                 }
             }
+            
+            DebugLogger.log("finalizeEvent END.");
         };
 
         new Thread(finalizeEvent).start();
