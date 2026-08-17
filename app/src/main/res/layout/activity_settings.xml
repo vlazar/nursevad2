@@ -81,6 +81,18 @@
         <TextView android:id="@+id/tvEmbeddingsFolderName" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="No folder selected" android:textStyle="italic" android:layout_marginTop="8dp" android:layout_marginBottom="8dp" />
         <Button android:id="@+id/btnSelectEmbeddingsFolder" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Select Embeddings Folder" />
 
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Embedding Thresholds" android:textSize="18sp" android:textStyle="bold" android:layout_marginTop="24dp" android:layout_marginBottom="8dp" />
+
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginTop="8dp">
+            <TextView android:id="@+id/tvPoiThreshold" android:layout_width="110dp" android:layout_height="wrap_content" android:text="POI: 0.75" />
+            <SeekBar android:id="@+id/sbPoiThreshold" android:layout_width="match_parent" android:layout_height="wrap_content" android:max="8" android:progress="4" />
+        </LinearLayout>
+
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginTop="12dp" android:layout_marginBottom="16dp">
+            <TextView android:id="@+id/tvPoniThreshold" android:layout_width="110dp" android:layout_height="wrap_content" android:text="PONI: 0.75" />
+            <SeekBar android:id="@+id/sbPoniThreshold" android:layout_width="match_parent" android:layout_height="wrap_content" android:max="8" android:progress="4" />
+        </LinearLayout>
+
         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Telegram Bot" android:textSize="18sp" android:textStyle="bold" android:layout_marginTop="24dp" android:layout_marginBottom="8dp" />
 
         <com.google.android.material.textfield.TextInputLayout

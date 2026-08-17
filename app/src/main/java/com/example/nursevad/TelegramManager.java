@@ -219,6 +219,16 @@ public class TelegramManager {
         } else if (data.startsWith("thresh_")) {
             handleThresholdCallback(data);
             sendSettingsMenu(chatId, messageId);
+        } else if (data.startsWith("poi_thresh_")) {
+            int current = SettingsManager.getPoiThreshold(appContext);
+            if (data.equals("poi_thresh_inc") && current < 95) SettingsManager.savePoiThreshold(appContext, current + 5);
+            if (data.equals("poi_thresh_dec") && current > 55) SettingsManager.savePoiThreshold(appContext, current - 5);
+            sendSettingsMenu(chatId, messageId);
+        } else if (data.startsWith("poni_thresh_")) {
+            int current = SettingsManager.getPoniThreshold(appContext);
+            if (data.equals("poni_thresh_inc") && current < 95) SettingsManager.savePoniThreshold(appContext, current + 5);
+            if (data.equals("poni_thresh_dec") && current > 55) SettingsManager.savePoniThreshold(appContext, current - 5);
+            sendSettingsMenu(chatId, messageId);
         }
         
         bot.execute(new AnswerCallbackQuery(callback.id()));
@@ -295,6 +305,8 @@ public class TelegramManager {
         int delay = SettingsManager.getDelay(appContext);
         int dur = SettingsManager.getDurationThreshold(appContext);
         int[] thresh = SettingsManager.getThresholds(appContext);
+        float poiTh = SettingsManager.getPoiThreshold(appContext) / 100f;
+        float poniTh = SettingsManager.getPoniThreshold(appContext) / 100f;
 
         String text = "*⚙️ Settings*\n" +
                 "Wait for End: " + (wait ? "ON" : "OFF") + "\n" +
@@ -338,6 +350,16 @@ public class TelegramManager {
                     new InlineKeyboardButton("-5").callbackData("thresh_5_dec"),
                     new InlineKeyboardButton("Level 5: " + thresh[4]).callbackData("noop"),
                     new InlineKeyboardButton("+5").callbackData("thresh_5_inc")
+                },
+                new InlineKeyboardButton[]{
+                    new InlineKeyboardButton("-0.05").callbackData("poi_thresh_dec"),
+                    new InlineKeyboardButton(String.format(java.util.Locale.US, "POI Threshold: %.2f", poiTh)).callbackData("noop"),
+                    new InlineKeyboardButton("+0.05").callbackData("poi_thresh_inc")
+                },
+                new InlineKeyboardButton[]{
+                    new InlineKeyboardButton("-0.05").callbackData("poni_thresh_dec"),
+                    new InlineKeyboardButton(String.format(java.util.Locale.US, "PONI Threshold: %.2f", poniTh)).callbackData("noop"),
+                    new InlineKeyboardButton("+0.05").callbackData("poni_thresh_inc")
                 },
                 new InlineKeyboardButton[]{ new InlineKeyboardButton("🔙 Back").callbackData("back_main") }
         );

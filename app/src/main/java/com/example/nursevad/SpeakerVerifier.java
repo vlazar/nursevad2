@@ -144,14 +144,17 @@ public class SpeakerVerifier {
             float[] embed = extractEmbedding(wav);
             DebugLogger.log("SpeakerVerifier.verify: extracted embedding");
             
+            float poiThreshold = SettingsManager.getPoiThreshold(appContext) / 100f;
+            float poniThreshold = SettingsManager.getPoniThreshold(appContext) / 100f;
+            
             float maxPos = maxCosineSim(poiEmbeddings, embed);
-            DebugLogger.log("SpeakerVerifier.verify: maxPos=" + maxPos);
-            boolean isMatch = maxPos >= 0.75f; 
+            DebugLogger.log("SpeakerVerifier.verify: maxPos=" + maxPos + ", poiThreshold=" + poiThreshold);
+            boolean isMatch = maxPos >= poiThreshold; 
             
             if (isMatch && poniEmbeddings != null && poniEmbeddings.length > 0) {
                 float maxNeg = maxCosineSim(poniEmbeddings, embed);
-                DebugLogger.log("SpeakerVerifier.verify: maxNeg=" + maxNeg);
-                if (maxNeg >= 0.75f) {
+                DebugLogger.log("SpeakerVerifier.verify: maxNeg=" + maxNeg + ", poniThreshold=" + poniThreshold);
+                if (maxNeg >= poniThreshold) {
                     isMatch = false;
                     DebugLogger.log("SpeakerVerifier.verify: PONI veto applied!");
                 }

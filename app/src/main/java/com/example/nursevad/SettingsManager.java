@@ -18,6 +18,8 @@ public class SettingsManager {
     private static final String KEY_USER_IDS = "user_ids";
     private static final String KEY_EMBEDDINGS_URI = "embeddings_uri";
     private static final String KEY_EMBEDDINGS_NAME = "embeddings_name";
+    private static final String KEY_POI_THRESHOLD = "poi_threshold";
+    private static final String KEY_PONI_THRESHOLD = "poni_threshold";
 
     private static SharedPreferences prefs;
 
@@ -97,4 +99,10 @@ public class SettingsManager {
     public static void saveEmbeddingsFolder(Context context, String uri, String name) {
         getPrefs(context).edit().putString(KEY_EMBEDDINGS_URI, uri).putString(KEY_EMBEDDINGS_NAME, name).commit();
     }
+
+    public static int getPoiThreshold(Context context) { return getPrefs(context).getInt(KEY_POI_THRESHOLD, 75); }
+    public static void savePoiThreshold(Context context, int val) { getPrefs(context).edit().putInt(KEY_POI_THRESHOLD, val).commit(); }
+
+    public static int getPoniThreshold(Context context) { return getPrefs(context).getInt(KEY_PONI_THRESHOLD, 75); }
+    public static void savePoniThreshold(Context context, int val) { getPrefs(context).edit().putInt(KEY_PONI_THRESHOLD, val).commit(); }
 }

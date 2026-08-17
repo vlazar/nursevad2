@@ -18,6 +18,7 @@ import androidx.appcompat.widget.SwitchCompat;
 import androidx.core.content.ContextCompat;
 import androidx.documentfile.provider.DocumentFile;
 import com.google.android.material.textfield.TextInputEditText;
+import java.util.Locale;
 import java.util.Set;
 
 public class SettingsActivity extends AppCompatActivity {
@@ -26,10 +27,7 @@ public class SettingsActivity extends AppCompatActivity {
     private SeekBar sbDuration;
     private TextView tvDuration;
     private TextView tvFolderName;
-
-    private TextView tvEmbeddingsFolderName;
-    private String selectedEmbeddingsUri, selectedEmbeddingsName;    
-
+    
     private SeekBar sbDelay;
     private TextView tvDelay;
     private SwitchCompat switchWaitForEnd;
@@ -37,14 +35,19 @@ public class SettingsActivity extends AppCompatActivity {
     private TextInputEditText etBotToken;
     private TextInputEditText etUserIds;
 
-    // Reminder UI
     private RadioGroup rgTrigger;
     private RadioButton rbStart, rbSpeech;
     private SeekBar sbRemMin, sbRemMax;
     private TextView tvRemMin, tvRemMax;
+
+    private TextView tvEmbeddingsFolderName;
+    private SeekBar sbPoiThreshold, sbPoniThreshold;
+    private TextView tvPoiThreshold, tvPoniThreshold;
     
     private String selectedFolderUri;
     private String selectedFolderName;
+    private String selectedEmbeddingsUri;
+    private String selectedEmbeddingsName;
 
     private SharedPreferences prefs;
     private SharedPreferences.OnSharedPreferenceChangeListener prefListener;
@@ -95,10 +98,8 @@ public class SettingsActivity extends AppCompatActivity {
         initWaitForEnd();
         initReminder();
         initFolderPicker();
-
-        tvEmbeddingsFolderName = findViewById(R.id.tvEmbeddingsFolderName);
-        findViewById(R.id.btnSelectEmbeddingsFolder).setOnClickListener(v -> embeddingsPickerLauncher.launch(null));
-
+        initEmbeddingsFolder();
+        initEmbeddingThresholds();
         initTelegramSettings();
         initSaveButton();
         loadSettings();
@@ -130,10 +131,7 @@ public class SettingsActivity extends AppCompatActivity {
                     int snapped = Math.round(progress / 5.0f) * 5;
                     if (snapped > 100) snapped = 100;
                     if (snapped < 0) snapped = 0;
-                    if (progress != snapped) {
-                        seekBar.setProgress(snapped);
-                        return; 
-                    }
+                    if (progress != snapped) { seekBar.setProgress(snapped); return; }
                     tvThresholds[index].setText(snapped + "%"); 
                 }
                 @Override public void onStartTrackingTouch(SeekBar seekBar) {}
@@ -191,12 +189,12 @@ public class SettingsActivity extends AppCompatActivity {
     private void updateReminderUI() {
         boolean isStart = rbStart.isChecked();
         if (isStart) {
-            sbRemMin.setMax(22); // (120 - 10) / 5
+            sbRemMin.setMax(22);
             sbRemMax.setMax(22);
             tvRemMin.setText((sbRemMin.getProgress() * 5 + 10) + " min");
             tvRemMax.setText((sbRemMax.getProgress() * 5 + 10) + " min");
         } else {
-            sbRemMin.setMax(30); // (180 - 30) / 5
+            sbRemMin.setMax(30);
             sbRemMax.setMax(30);
             tvRemMin.setText((sbRemMin.getProgress() * 5 + 30) + " sec");
             tvRemMax.setText((sbRemMax.getProgress() * 5 + 30) + " sec");
@@ -207,6 +205,36 @@ public class SettingsActivity extends AppCompatActivity {
         tvFolderName = findViewById(R.id.tvFolderName);
         Button btnSelectFolder = findViewById(R.id.btnSelectFolder);
         btnSelectFolder.setOnClickListener(v -> folderPickerLauncher.launch(null));
+    }
+
+    private void initEmbeddingsFolder() {
+        tvEmbeddingsFolderName = findViewById(R.id.tvEmbeddingsFolderName);
+        findViewById(R.id.btnSelectEmbeddingsFolder).setOnClickListener(v -> embeddingsPickerLauncher.launch(null));
+    }
+
+    private void initEmbeddingThresholds() {
+        sbPoiThreshold = findViewById(R.id.sbPoiThreshold);
+        sbPoniThreshold = findViewById(R.id.sbPoniThreshold);
+        tvPoiThreshold = findViewById(R.id.tvPoiThreshold);
+        tvPoniThreshold = findViewById(R.id.tvPoniThreshold);
+
+        sbPoiThreshold.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                float val = 0.55f + progress * 0.05f;
+                tvPoiThreshold.setText(String.format(Locale.US, "POI: %.2f", val));
+            }
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+            @Override public void onStopTrackingTouch(SeekBar seekBar) {}
+        });
+
+        sbPoniThreshold.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                float val = 0.55f + progress * 0.05f;
+                tvPoniThreshold.setText(String.format(Locale.US, "PONI: %.2f", val));
+            }
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+            @Override public void onStopTrackingTouch(SeekBar seekBar) {}
+        });
     }
 
     private void initTelegramSettings() {
@@ -238,6 +266,12 @@ public class SettingsActivity extends AppCompatActivity {
 
             if (selectedFolderUri != null) SettingsManager.saveFolder(this, selectedFolderUri, selectedFolderName);
             if (selectedEmbeddingsUri != null) SettingsManager.saveEmbeddingsFolder(this, selectedEmbeddingsUri, selectedEmbeddingsName);
+
+            // Save embedding thresholds as integers (hundredths)
+            int poiVal = 55 + sbPoiThreshold.getProgress() * 5;
+            int poniVal = 55 + sbPoniThreshold.getProgress() * 5;
+            SettingsManager.savePoiThreshold(this, poiVal);
+            SettingsManager.savePoniThreshold(this, poniVal);
             
             String token = etBotToken.getText() != null ? etBotToken.getText().toString().trim() : "";
             String idsStr = etUserIds.getText() != null ? etUserIds.getText().toString().trim() : "";
@@ -292,10 +326,19 @@ public class SettingsActivity extends AppCompatActivity {
         selectedFolderName = folderName;
         tvFolderName.setText(folderName != null ? folderName : "No folder selected");
 
+        String embFolderName = SettingsManager.getEmbeddingsFolderName(this);
         selectedEmbeddingsUri = SettingsManager.getEmbeddingsFolderUri(this);
-        selectedEmbeddingsName = SettingsManager.getEmbeddingsFolderName(this);
-        tvEmbeddingsFolderName.setText(selectedEmbeddingsName != null ? selectedEmbeddingsName : "No folder selected");
+        selectedEmbeddingsName = embFolderName;
+        tvEmbeddingsFolderName.setText(embFolderName != null ? embFolderName : "No folder selected");
 
+        // Load embedding thresholds
+        int poiVal = SettingsManager.getPoiThreshold(this);
+        int poniVal = SettingsManager.getPoniThreshold(this);
+        sbPoiThreshold.setProgress((poiVal - 55) / 5);
+        sbPoniThreshold.setProgress((poniVal - 55) / 5);
+        tvPoiThreshold.setText(String.format(Locale.US, "POI: %.2f", poiVal / 100f));
+        tvPoniThreshold.setText(String.format(Locale.US, "PONI: %.2f", poniVal / 100f));
+        
         if (!etBotToken.hasFocus()) etBotToken.setText(SettingsManager.getBotToken(this));
         if (!etUserIds.hasFocus()) {
             Set<Long> ids = SettingsManager.getAllowedUserIds(this);
