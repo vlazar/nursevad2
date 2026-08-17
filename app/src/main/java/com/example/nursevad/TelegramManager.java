@@ -113,7 +113,6 @@ public class TelegramManager {
         sendMainMenu(message.chat().id(), message.messageId());
     }
 
-    // FIX: Made asynchronous to prevent NetworkOnMainThreadException
     private void broadcastMessage(String text) {
         Set<Long> allowedIds = SettingsManager.getAllowedUserIds(appContext);
         for (Long chatId : allowedIds) {
@@ -192,13 +191,17 @@ public class TelegramManager {
         } else if (data.equals("stop_vad")) {
             VadService.stopService(appContext);
             editMessage(chatId, messageId, "🟥 Stop\n🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥");
+        } else if (data.equals("toggle_silent")) {
+            boolean current = SettingsManager.isSilentMode(appContext);
+            SettingsManager.saveSilentMode(appContext, !current);
+            editMainMenu(chatId, messageId);
         } else if (data.equals("status")) {
             String state = VadService.isVadListening ? "Listening..." : "Idle";
             editMessage(chatId, messageId, "📊 Current State: " + state);
         } else if (data.equals("settings")) {
             sendSettingsMenu(chatId, messageId);
         } else if (data.equals("back_main")) {
-            sendMainMenu(chatId, messageId);
+            editMainMenu(chatId, messageId);
         } else if (data.startsWith("toggle_wait")) {
             boolean current = SettingsManager.getWaitForEnd(appContext);
             SettingsManager.saveWaitForEnd(appContext, !current);
@@ -236,12 +239,16 @@ public class TelegramManager {
 
     private void sendMainMenu(long chatId, int replyToId) {
         String state = VadService.isVadListening ? "🟢 Listening..." : "⚪ Idle";
+        boolean silent = SettingsManager.isSilentMode(appContext);
         String text = "*Nurse VAD Control Panel*\nState: " + state;
         
         InlineKeyboardMarkup markup = new InlineKeyboardMarkup(
                 new InlineKeyboardButton[]{
                         new InlineKeyboardButton("▶ Start").callbackData("start_vad"),
                         new InlineKeyboardButton("⏹ Stop").callbackData("stop_vad")
+                },
+                new InlineKeyboardButton[]{
+                        new InlineKeyboardButton("Toggle Silent Mode (" + (silent ? "ON" : "OFF") + ")").callbackData("toggle_silent")
                 },
                 new InlineKeyboardButton[]{
                         new InlineKeyboardButton("📊 Status").callbackData("status")
@@ -254,6 +261,33 @@ public class TelegramManager {
         SendMessage msg = new SendMessage(chatId, text).parseMode(ParseMode.Markdown).replyMarkup(markup);
         if (replyToId > 0) msg.replyToMessageId(replyToId);
         bot.execute(msg);
+    }
+
+    private void editMainMenu(long chatId, int messageId) {
+        String state = VadService.isVadListening ? "🟢 Listening..." : "⚪ Idle";
+        boolean silent = SettingsManager.isSilentMode(appContext);
+        String text = "*Nurse VAD Control Panel*\nState: " + state;
+        
+        InlineKeyboardMarkup markup = new InlineKeyboardMarkup(
+                new InlineKeyboardButton[]{
+                        new InlineKeyboardButton("▶ Start").callbackData("start_vad"),
+                        new InlineKeyboardButton("⏹ Stop").callbackData("stop_vad")
+                },
+                new InlineKeyboardButton[]{
+                        new InlineKeyboardButton("Toggle Silent Mode (" + (silent ? "ON" : "OFF") + ")").callbackData("toggle_silent")
+                },
+                new InlineKeyboardButton[]{
+                        new InlineKeyboardButton("📊 Status").callbackData("status")
+                },
+                new InlineKeyboardButton[]{
+                        new InlineKeyboardButton("⚙️ Settings").callbackData("settings")
+                }
+        );
+
+        EditMessageText edit = new EditMessageText(chatId, messageId, text)
+                .parseMode(ParseMode.Markdown)
+                .replyMarkup(markup);
+        bot.execute(edit);
     }
 
     private void sendSettingsMenu(long chatId, int messageId) {
@@ -353,7 +387,6 @@ public class TelegramManager {
         }
     }
 
-    // FIX: Made asynchronous to prevent NetworkOnMainThreadException when called from Intro/Reminder
     public void sendTextMessage(String text) {
         if (!isRunning || bot == null) return;
         Set<Long> allowedIds = SettingsManager.getAllowedUserIds(appContext);
