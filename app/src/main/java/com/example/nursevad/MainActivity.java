@@ -1,7 +1,9 @@
 package com.example.nursevad;
 
 import android.Manifest;
+import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
@@ -13,7 +15,7 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
-import androidx.appcompat.widget.SwitchCompat; // FIX: Added missing import
+import androidx.appcompat.widget.SwitchCompat;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.recyclerview.widget.LinearLayoutManager;
@@ -29,6 +31,10 @@ public class MainActivity extends AppCompatActivity {
     private RecyclerView recyclerView;
     private Button btnStartStop;
     private SwitchCompat switchSilent;
+
+    private SharedPreferences prefs;
+    private SharedPreferences.OnSharedPreferenceChangeListener prefListener;
+    private boolean isUpdatingSilentSwitch = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -57,10 +63,25 @@ public class MainActivity extends AppCompatActivity {
         ImageButton btnClear = findViewById(R.id.btnClear);
         recyclerView = findViewById(R.id.recyclerView);
         
-        // Initialize Silent Mode Toggle
         switchSilent = findViewById(R.id.switchSilent);
         switchSilent.setChecked(SettingsManager.isSilentMode(this));
-        switchSilent.setOnCheckedChangeListener((buttonView, isChecked) -> SettingsManager.saveSilentMode(this, isChecked));
+        switchSilent.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            if (!isUpdatingSilentSwitch) {
+                SettingsManager.saveSilentMode(this, isChecked);
+            }
+        });
+
+        // Listen for external changes to silent_mode (e.g., from Telegram bot)
+        prefs = getSharedPreferences("NurseVadPrefs", Context.MODE_PRIVATE);
+        prefListener = (sharedPreferences, key) -> {
+            if ("silent_mode".equals(key) && !isUpdatingSilentSwitch) {
+                runOnUiThread(() -> {
+                    isUpdatingSilentSwitch = true;
+                    switchSilent.setChecked(SettingsManager.isSilentMode(this));
+                    isUpdatingSilentSwitch = false;
+                });
+            }
+        };
 
         if (isListening) {
             btnStartStop.setText("Stop");
@@ -123,11 +144,22 @@ public class MainActivity extends AppCompatActivity {
         EventBus.getInstance().getDebug().observe(this, msg -> tvDebug.setText(msg));
         EventBus.getInstance().getPlayingUri().observe(this, uri -> adapter.setPlayingUri(uri));
         
-        // Sync button state with Service
         EventBus.getInstance().getVadRunning().observe(this, isRunning -> {
             this.isListening = isRunning;
             btnStartStop.setText(isRunning ? "Stop" : "Start");
         });
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        prefs.registerOnSharedPreferenceChangeListener(prefListener);
+    }
+
+    @Override
+    protected void onStop() {
+        super.onStop();
+        prefs.unregisterOnSharedPreferenceChangeListener(prefListener);
     }
 
     private void startTelegramServiceIfConfigured() {
