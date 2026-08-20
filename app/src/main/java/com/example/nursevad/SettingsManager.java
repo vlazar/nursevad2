@@ -20,6 +20,7 @@ public class SettingsManager {
     private static final String KEY_EMBEDDINGS_NAME = "embeddings_name";
     private static final String KEY_POI_THRESHOLD = "poi_threshold";
     private static final String KEY_PONI_THRESHOLD = "poni_threshold";
+    private static final String KEY_USE_EMBEDDINGS = "use_embeddings";
 
     private static SharedPreferences prefs;
 
@@ -105,4 +106,7 @@ public class SettingsManager {
 
     public static int getPoniThreshold(Context context) { return getPrefs(context).getInt(KEY_PONI_THRESHOLD, 75); }
     public static void savePoniThreshold(Context context, int val) { getPrefs(context).edit().putInt(KEY_PONI_THRESHOLD, val).commit(); }
+
+    public static boolean getUseEmbeddings(Context context) { return getPrefs(context).getBoolean(KEY_USE_EMBEDDINGS, true); }
+    public static void saveUseEmbeddings(Context context, boolean use) { getPrefs(context).edit().putBoolean(KEY_USE_EMBEDDINGS, use).commit(); }
 }

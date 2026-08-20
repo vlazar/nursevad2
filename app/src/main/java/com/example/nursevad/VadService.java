@@ -429,8 +429,8 @@ public class VadService extends Service {
             
             boolean isPoi = true;
             String embUri = SettingsManager.getEmbeddingsFolderUri(this);
-            if (embUri != null && finalRecordedFile != null && finalRecordedFile.exists()) {
-                DebugLogger.log("finalizeEvent: Running speaker verification...");
+            boolean useEmbeddings = SettingsManager.getUseEmbeddings(this);
+            if (useEmbeddings && embUri != null && finalRecordedFile != null && finalRecordedFile.exists()) {                DebugLogger.log("finalizeEvent: Running speaker verification...");
                 isPoi = SpeakerVerifier.getInstance(this).verify(finalRecordedFile);
                 DebugLogger.log("finalizeEvent: Verification result isPoi=" + isPoi);
             } else {

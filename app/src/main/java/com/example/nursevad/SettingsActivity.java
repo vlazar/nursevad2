@@ -43,6 +43,9 @@ public class SettingsActivity extends AppCompatActivity {
     private TextView tvEmbeddingsFolderName;
     private SeekBar sbPoiThreshold, sbPoniThreshold;
     private TextView tvPoiThreshold, tvPoniThreshold;
+
+    private SwitchCompat switchUseEmbeddings;
+    private TextView tvUseEmbeddings;
     
     private String selectedFolderUri;
     private String selectedFolderName;
@@ -99,6 +102,7 @@ public class SettingsActivity extends AppCompatActivity {
         initReminder();
         initFolderPicker();
         initEmbeddingsFolder();
+        initUseEmbeddingsToggle();
         initEmbeddingThresholds();
         initTelegramSettings();
         initSaveButton();
@@ -212,6 +216,14 @@ public class SettingsActivity extends AppCompatActivity {
         findViewById(R.id.btnSelectEmbeddingsFolder).setOnClickListener(v -> embeddingsPickerLauncher.launch(null));
     }
 
+    private void initUseEmbeddingsToggle() {
+        switchUseEmbeddings = findViewById(R.id.switchUseEmbeddings);
+        tvUseEmbeddings = findViewById(R.id.tvUseEmbeddings);
+        switchUseEmbeddings.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            tvUseEmbeddings.setText(isChecked ? "ON" : "OFF");
+        });
+    }
+
     private void initEmbeddingThresholds() {
         sbPoiThreshold = findViewById(R.id.sbPoiThreshold);
         sbPoniThreshold = findViewById(R.id.sbPoniThreshold);
@@ -267,7 +279,8 @@ public class SettingsActivity extends AppCompatActivity {
             if (selectedFolderUri != null) SettingsManager.saveFolder(this, selectedFolderUri, selectedFolderName);
             if (selectedEmbeddingsUri != null) SettingsManager.saveEmbeddingsFolder(this, selectedEmbeddingsUri, selectedEmbeddingsName);
 
-            // Save embedding thresholds as integers (hundredths)
+            SettingsManager.saveUseEmbeddings(this, switchUseEmbeddings.isChecked());
+
             int poiVal = 55 + sbPoiThreshold.getProgress() * 5;
             int poniVal = 55 + sbPoniThreshold.getProgress() * 5;
             SettingsManager.savePoiThreshold(this, poiVal);
@@ -331,7 +344,10 @@ public class SettingsActivity extends AppCompatActivity {
         selectedEmbeddingsName = embFolderName;
         tvEmbeddingsFolderName.setText(embFolderName != null ? embFolderName : "No folder selected");
 
-        // Load embedding thresholds
+        boolean useEmb = SettingsManager.getUseEmbeddings(this);
+        switchUseEmbeddings.setChecked(useEmb);
+        tvUseEmbeddings.setText(useEmb ? "ON" : "OFF");
+
         int poiVal = SettingsManager.getPoiThreshold(this);
         int poniVal = SettingsManager.getPoniThreshold(this);
         sbPoiThreshold.setProgress((poiVal - 55) / 5);

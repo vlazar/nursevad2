@@ -36,7 +36,6 @@
         <TextView android:id="@+id/tvDuration" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="shorter than 2 seconds" android:layout_marginBottom="8dp" />
         <SeekBar android:id="@+id/sbDuration" android:layout_width="match_parent" android:layout_height="wrap_content" />
 
-        <!-- Updated Label -->
         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Delay Response" android:textSize="18sp" android:textStyle="bold" android:layout_marginTop="24dp" android:layout_marginBottom="8dp" />
         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical">
             <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="for " />
@@ -45,14 +44,13 @@
         <SeekBar android:id="@+id/sbDelay" android:layout_width="match_parent" android:layout_height="wrap_content" android:max="10" android:layout_marginBottom="16dp"/>
 
         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Wait For Speech To End" android:textSize="18sp" android:textStyle="bold" android:layout_marginBottom="8dp" />
-        <androidx.appcompat.widget.SwitchCompat 
-            android:id="@+id/switchWaitForEnd" 
-            android:layout_width="match_parent" 
-            android:layout_height="wrap_content" 
-            android:checked="true" 
+        <androidx.appcompat.widget.SwitchCompat
+            android:id="@+id/switchWaitForEnd"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:checked="true"
             android:layout_marginBottom="16dp" />
 
-        <!-- Add this block right before the "Audio Files Folder" TextView -->
         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Reminder Trigger" android:textSize="18sp" android:textStyle="bold" android:layout_marginTop="24dp" android:layout_marginBottom="8dp" />
         <RadioGroup android:id="@+id/rgReminderTrigger" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="16dp">
             <RadioButton android:id="@+id/rbTriggerStart" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Start" android:checked="true" />
@@ -74,9 +72,15 @@
         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Audio Files Folder" android:textSize="18sp" android:textStyle="bold" android:layout_marginTop="24dp" android:layout_marginBottom="8dp" />
         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Select a folder containing Level 1, ..., Level 5 subfolders" android:textSize="14sp" />
         <TextView android:id="@+id/tvFolderName" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="No folder selected" android:textStyle="italic" android:layout_marginTop="8dp" android:layout_marginBottom="8dp" />
-        <Button android:id="@+id/btnSelectFolder" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Select Folder" />
+        <Button android:id="@+id/btnSelectFolder" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Select Audio Folder" />
 
-        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Speaker Embeddings Folder" android:textSize="18sp" android:textStyle="bold" android:layout_marginTop="24dp" android:layout_marginBottom="8dp" />
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Speaker Embeddings" android:textSize="18sp" android:textStyle="bold" android:layout_marginTop="24dp" android:layout_marginBottom="8dp" />
+
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginBottom="8dp">
+            <TextView android:id="@+id/tvUseEmbeddings" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="ON" android:textSize="16sp" />
+            <androidx.appcompat.widget.SwitchCompat android:id="@+id/switchUseEmbeddings" android:layout_width="wrap_content" android:layout_height="wrap_content" android:checked="true" />
+        </LinearLayout>
+
         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Select a folder containing speaker embeddings (POI/PONI)" android:textSize="14sp" />
         <TextView android:id="@+id/tvEmbeddingsFolderName" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="No folder selected" android:textStyle="italic" android:layout_marginTop="8dp" android:layout_marginBottom="8dp" />
         <Button android:id="@+id/btnSelectEmbeddingsFolder" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Select Embeddings Folder" />

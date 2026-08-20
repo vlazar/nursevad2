@@ -195,6 +195,10 @@ public class TelegramManager {
             boolean current = SettingsManager.isSilentMode(appContext);
             SettingsManager.saveSilentMode(appContext, !current);
             editMainMenu(chatId, messageId);
+        } else if (data.equals("toggle_use_embeddings")) {
+            boolean current = SettingsManager.getUseEmbeddings(appContext);
+            SettingsManager.saveUseEmbeddings(appContext, !current);
+            editMainMenu(chatId, messageId);
         } else if (data.equals("status")) {
             String state = VadService.isVadListening ? "Listening..." : "Idle";
             editMessage(chatId, messageId, "📊 Current State: " + state);
@@ -250,6 +254,7 @@ public class TelegramManager {
     private void sendMainMenu(long chatId, int replyToId) {
         String state = VadService.isVadListening ? "🟢 Listening..." : "⚪ Idle";
         boolean silent = SettingsManager.isSilentMode(appContext);
+        boolean useEmb = SettingsManager.getUseEmbeddings(appContext);
         String text = "*Nurse VAD Control Panel*\nState: " + state;
         
         InlineKeyboardMarkup markup = new InlineKeyboardMarkup(
@@ -259,6 +264,9 @@ public class TelegramManager {
                 },
                 new InlineKeyboardButton[]{
                         new InlineKeyboardButton("Toggle Silent Mode (" + (silent ? "ON" : "OFF") + ")").callbackData("toggle_silent")
+                },
+                new InlineKeyboardButton[]{
+                        new InlineKeyboardButton("Use Embeddings (" + (useEmb ? "ON" : "OFF") + ")").callbackData("toggle_use_embeddings")
                 },
                 new InlineKeyboardButton[]{
                         new InlineKeyboardButton("📊 Status").callbackData("status")
@@ -276,6 +284,7 @@ public class TelegramManager {
     private void editMainMenu(long chatId, int messageId) {
         String state = VadService.isVadListening ? "🟢 Listening..." : "⚪ Idle";
         boolean silent = SettingsManager.isSilentMode(appContext);
+        boolean useEmb = SettingsManager.getUseEmbeddings(appContext);
         String text = "*Nurse VAD Control Panel*\nState: " + state;
         
         InlineKeyboardMarkup markup = new InlineKeyboardMarkup(
@@ -285,6 +294,9 @@ public class TelegramManager {
                 },
                 new InlineKeyboardButton[]{
                         new InlineKeyboardButton("Toggle Silent Mode (" + (silent ? "ON" : "OFF") + ")").callbackData("toggle_silent")
+                },
+                new InlineKeyboardButton[]{
+                        new InlineKeyboardButton("Use Embeddings (" + (useEmb ? "ON" : "OFF") + ")").callbackData("toggle_use_embeddings")
                 },
                 new InlineKeyboardButton[]{
                         new InlineKeyboardButton("📊 Status").callbackData("status")
