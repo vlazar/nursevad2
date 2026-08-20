@@ -626,6 +626,13 @@ public class VadService extends Service {
         EventRepository.getInstance().addEvent(new LogEvent(LogEvent.Type.INTRO, file));
         TelegramManager.getInstance().sendTextMessage("🔵 Intro " + file.displayName);
         
+        // Silent mode: log and notify, but skip audio playback and move to next intro file
+        if (SettingsManager.isSilentMode(this)) {
+            DebugLogger.log("playNextIntro: Silent mode ON, skipping audio playback");
+            playNextIntro();
+            return;
+        }
+
         isPaused = true;
         isProcessingResponse = true;
         pauseReminderTimer(); 
@@ -708,6 +715,13 @@ public class VadService extends Service {
         EventRepository.getInstance().addEvent(new LogEvent(LogEvent.Type.REMINDER, file));
         TelegramManager.getInstance().sendTextMessage("🔵 Reminder " + file.displayName);
         
+        // Silent mode: log and notify, but skip audio playback
+        if (SettingsManager.isSilentMode(this)) {
+            DebugLogger.log("playReminder: Silent mode ON, skipping audio playback");
+            onPlaybackComplete();
+            return;
+        }
+
         isPaused = true;
         isProcessingResponse = true;
         pauseReminderTimer(); 
