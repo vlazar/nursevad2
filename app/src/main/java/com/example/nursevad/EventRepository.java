@@ -6,6 +6,7 @@ import java.util.List;
 
 public class EventRepository {
     private static EventRepository instance;
+    private static final int MAX_EVENTS = 100;
     private final List<LogEvent> masterList = new ArrayList<>();
     private final MutableLiveData<List<LogEvent>> liveEvents = new MutableLiveData<>();
 
@@ -15,20 +16,25 @@ public class EventRepository {
     }
 
     public void addEvent(LogEvent event) {
-        DebugLogger.log("EventRepo ADD: type=" + event.type + " | id=" + event.id + 
-                " | ts=" + event.timestamp + " | level=" + event.level + 
-                " | isPoni=" + event.isPoni + " | display=" + event.displayName +
-                " | thread=" + Thread.currentThread().getName());
+        DebugLogger.log("EventRepository addEvent: type=" + event.type + 
+                " | id=" + event.id + " | thread=" + Thread.currentThread().getName());
         
         synchronized (masterList) {
             masterList.add(0, event);
-            DebugLogger.log("EventRepo masterList size=" + masterList.size());
+            
+            // Cap the list to prevent unbounded memory growth
+            while (masterList.size() > MAX_EVENTS) {
+                masterList.remove(masterList.size() - 1);
+            }
+            
             liveEvents.postValue(new ArrayList<>(masterList));
         }
+        
+        DebugLogger.log("EventRepository masterList size: " + masterList.size());
     }
 
     public void clearEvents() {
-        DebugLogger.log("EventRepo CLEAR");
+        DebugLogger.log("EventRepository CLEAR");
         synchronized (masterList) {
             masterList.clear();
             liveEvents.postValue(new ArrayList<>());

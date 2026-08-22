@@ -445,7 +445,10 @@ public class VadService extends Service {
                     ", level=" + event.level + ", display=" + event.displayName);
             
             EventRepository.getInstance().addEvent(event);
-            
+
+            // Clean up old WAV files to prevent memory/disk accumulation
+            cleanupOldWavFiles();            
+
             if (finalRecordedFile != null && finalRecordedFile.exists()) {
                 String responseName = isPoi ? (finalFile != null ? finalFile.displayName : null) : "PONI is talking";
                 TelegramManager.getInstance().sendAudioEvent(Uri.fromFile(finalRecordedFile).toString(), finalLevel, responseName, !isPoi);
@@ -851,6 +854,28 @@ public class VadService extends Service {
         debugMsg.append("Rem:").append(reminderFiles.size());
 
         EventBus.getInstance().postDebug("Files found -> " + debugMsg.toString());
+    }
+
+    private void cleanupOldWavFiles() {
+        try {
+            File cacheDir = getCacheDir();
+            File[] wavFiles = cacheDir.listFiles((dir, name) -> name.startsWith("speech_") && name.endsWith(".wav"));
+            if (wavFiles == null || wavFiles.length <= 20) return;
+            
+            // Sort by last modified time (oldest first)
+            java.util.Arrays.sort(wavFiles, (a, b) -> Long.compare(a.lastModified(), b.lastModified()));
+            
+            // Delete oldest files, keeping only the 20 most recent
+            int toDelete = wavFiles.length - 20;
+            for (int i = 0; i < toDelete; i++) {
+                boolean deleted = wavFiles[i].delete();
+                if (deleted) {
+                    DebugLogger.log("Cleaned up old WAV: " + wavFiles[i].getName());
+                }
+            }
+        } catch (Exception e) {
+            DebugLogger.log("WAV cleanup error: " + e.getMessage());
+        }
     }
 
     private void writeWavHeader(FileOutputStream out, int sampleRate, int channels, int bitsPerSample) throws IOException {

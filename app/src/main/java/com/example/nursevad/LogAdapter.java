@@ -31,12 +31,9 @@ public class LogAdapter extends ListAdapter<LogEvent, LogAdapter.ViewHolder> {
                 return oldItem.id.equals(newItem.id);
             }
             @Override public boolean areContentsTheSame(@NonNull LogEvent oldItem, @NonNull LogEvent newItem) {
+                // Simplified comparison to reduce DiffUtil overhead
                 return oldItem.id.equals(newItem.id) && 
-                       oldItem.type == newItem.type && 
-                       oldItem.level == newItem.level &&
-                       oldItem.isPoni == newItem.isPoni &&
-                       (oldItem.displayName != null ? oldItem.displayName.equals(newItem.displayName) : newItem.displayName == null) &&
-                       (oldItem.recordedSpeechUri != null ? oldItem.recordedSpeechUri.equals(newItem.recordedSpeechUri) : newItem.recordedSpeechUri == null);
+                       oldItem.isPoni == newItem.isPoni;
             }
         });
         this.listener = listener;
