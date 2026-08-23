@@ -69,6 +69,24 @@
             <SeekBar android:id="@+id/sbReminderMax" android:layout_width="match_parent" android:layout_height="wrap_content" />
         </LinearLayout>
 
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Repeat Reminder" android:textSize="18sp" android:textStyle="bold" android:layout_marginBottom="8dp" />
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginBottom="16dp">
+            <TextView android:id="@+id/tvRepeatReminder" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="ON" android:textSize="16sp" />
+            <androidx.appcompat.widget.SwitchCompat android:id="@+id/switchRepeatReminder" android:layout_width="wrap_content" android:layout_height="wrap_content" android:checked="true" />
+        </LinearLayout>
+
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Repeat Reminder After (Min)" android:textSize="16sp" android:layout_marginBottom="4dp" />
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical">
+            <TextView android:id="@+id/tvRepeatReminderMin" android:layout_width="64dp" android:layout_height="wrap_content" android:text="10 sec" />
+            <SeekBar android:id="@+id/sbRepeatReminderMin" android:layout_width="match_parent" android:layout_height="wrap_content" />
+        </LinearLayout>
+
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Repeat Reminder After (Max)" android:textSize="16sp" android:layout_marginTop="8dp" android:layout_marginBottom="4dp" />
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical" android:layout_marginBottom="16dp">
+            <TextView android:id="@+id/tvRepeatReminderMax" android:layout_width="64dp" android:layout_height="wrap_content" android:text="10 sec" />
+            <SeekBar android:id="@+id/sbRepeatReminderMax" android:layout_width="match_parent" android:layout_height="wrap_content" />
+        </LinearLayout>
+
         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Audio Files Folder" android:textSize="18sp" android:textStyle="bold" android:layout_marginTop="24dp" android:layout_marginBottom="8dp" />
         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Select a folder containing Level 1, ..., Level 5 subfolders" android:textSize="14sp" />
         <TextView android:id="@+id/tvFolderName" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="No folder selected" android:textStyle="italic" android:layout_marginTop="8dp" android:layout_marginBottom="8dp" />

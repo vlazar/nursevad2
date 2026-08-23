@@ -21,6 +21,9 @@ public class SettingsManager {
     private static final String KEY_POI_THRESHOLD = "poi_threshold";
     private static final String KEY_PONI_THRESHOLD = "poni_threshold";
     private static final String KEY_USE_EMBEDDINGS = "use_embeddings";
+    private static final String KEY_REPEAT_REMINDER = "repeat_reminder";
+    private static final String KEY_REPEAT_REMINDER_MIN = "repeat_reminder_min";
+    private static final String KEY_REPEAT_REMINDER_MAX = "repeat_reminder_max";
 
     private static SharedPreferences prefs;
 
@@ -109,4 +112,13 @@ public class SettingsManager {
 
     public static boolean getUseEmbeddings(Context context) { return getPrefs(context).getBoolean(KEY_USE_EMBEDDINGS, true); }
     public static void saveUseEmbeddings(Context context, boolean use) { getPrefs(context).edit().putBoolean(KEY_USE_EMBEDDINGS, use).commit(); }
+
+    public static boolean getRepeatReminder(Context context) { return getPrefs(context).getBoolean(KEY_REPEAT_REMINDER, true); }
+    public static void saveRepeatReminder(Context context, boolean val) { getPrefs(context).edit().putBoolean(KEY_REPEAT_REMINDER, val).commit(); }
+
+    public static int getRepeatReminderMin(Context context) { return getPrefs(context).getInt(KEY_REPEAT_REMINDER_MIN, 10); }
+    public static void saveRepeatReminderMin(Context context, int val) { getPrefs(context).edit().putInt(KEY_REPEAT_REMINDER_MIN, val).commit(); }
+
+    public static int getRepeatReminderMax(Context context) { return getPrefs(context).getInt(KEY_REPEAT_REMINDER_MAX, 10); }
+    public static void saveRepeatReminderMax(Context context, int val) { getPrefs(context).edit().putInt(KEY_REPEAT_REMINDER_MAX, val).commit(); }
 }

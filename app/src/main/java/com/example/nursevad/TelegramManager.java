@@ -233,6 +233,30 @@ public class TelegramManager {
             if (data.equals("poni_thresh_inc") && current < 95) SettingsManager.savePoniThreshold(appContext, current + 5);
             if (data.equals("poni_thresh_dec") && current > 55) SettingsManager.savePoniThreshold(appContext, current - 5);
             sendSettingsMenu(chatId, messageId);
+        } else if (data.equals("toggle_repeat_reminder")) {
+            boolean current = SettingsManager.getRepeatReminder(appContext);
+            SettingsManager.saveRepeatReminder(appContext, !current);
+            sendSettingsMenu(chatId, messageId);
+        } else if (data.startsWith("rem_min_")) {
+            int current = SettingsManager.getReminderSpeechMin(appContext);
+            if (data.equals("rem_min_inc") && current < 180) SettingsManager.saveReminderSpeechMin(appContext, current + 5);
+            if (data.equals("rem_min_dec") && current > 30) SettingsManager.saveReminderSpeechMin(appContext, current - 5);
+            sendSettingsMenu(chatId, messageId);
+        } else if (data.startsWith("rem_max_")) {
+            int current = SettingsManager.getReminderSpeechMax(appContext);
+            if (data.equals("rem_max_inc") && current < 180) SettingsManager.saveReminderSpeechMax(appContext, current + 5);
+            if (data.equals("rem_max_dec") && current > 30) SettingsManager.saveReminderSpeechMax(appContext, current - 5);
+            sendSettingsMenu(chatId, messageId);
+        } else if (data.startsWith("rep_min_")) {
+            int current = SettingsManager.getRepeatReminderMin(appContext);
+            if (data.equals("rep_min_inc") && current < 30) SettingsManager.saveRepeatReminderMin(appContext, current + 5);
+            if (data.equals("rep_min_dec") && current > 5) SettingsManager.saveRepeatReminderMin(appContext, current - 5);
+            sendSettingsMenu(chatId, messageId);
+        } else if (data.startsWith("rep_max_")) {
+            int current = SettingsManager.getRepeatReminderMax(appContext);
+            if (data.equals("rep_max_inc") && current < 30) SettingsManager.saveRepeatReminderMax(appContext, current + 5);
+            if (data.equals("rep_max_dec") && current > 5) SettingsManager.saveRepeatReminderMax(appContext, current - 5);
+            sendSettingsMenu(chatId, messageId);
         }
         
         bot.execute(new AnswerCallbackQuery(callback.id()));
@@ -319,6 +343,11 @@ public class TelegramManager {
         int[] thresh = SettingsManager.getThresholds(appContext);
         float poiTh = SettingsManager.getPoiThreshold(appContext) / 100f;
         float poniTh = SettingsManager.getPoniThreshold(appContext) / 100f;
+        boolean repeatRem = SettingsManager.getRepeatReminder(appContext);
+        int repMin = SettingsManager.getRepeatReminderMin(appContext);
+        int repMax = SettingsManager.getRepeatReminderMax(appContext);
+        int remMin = SettingsManager.getReminderSpeechMin(appContext);
+        int remMax = SettingsManager.getReminderSpeechMax(appContext);
 
         String text = "*⚙️ Settings*\n" +
                 "Wait for End: " + (wait ? "ON" : "OFF") + "\n" +
@@ -372,6 +401,27 @@ public class TelegramManager {
                     new InlineKeyboardButton("-0.05").callbackData("poni_thresh_dec"),
                     new InlineKeyboardButton(String.format(java.util.Locale.US, "PONI Threshold: %.2f", poniTh)).callbackData("noop"),
                     new InlineKeyboardButton("+0.05").callbackData("poni_thresh_inc")
+                },
+                new InlineKeyboardButton[]{ new InlineKeyboardButton("Repeat Reminder (" + (repeatRem ? "ON" : "OFF") + ")").callbackData("toggle_repeat_reminder") },
+                new InlineKeyboardButton[]{
+                    new InlineKeyboardButton("-5s").callbackData("rem_min_dec"),
+                    new InlineKeyboardButton("Rem After Min: " + remMin + "s").callbackData("noop"),
+                    new InlineKeyboardButton("+5s").callbackData("rem_min_inc")
+                },
+                new InlineKeyboardButton[]{
+                    new InlineKeyboardButton("-5s").callbackData("rem_max_dec"),
+                    new InlineKeyboardButton("Rem After Max: " + remMax + "s").callbackData("noop"),
+                    new InlineKeyboardButton("+5s").callbackData("rem_max_inc")
+                },
+                new InlineKeyboardButton[]{
+                    new InlineKeyboardButton("-5s").callbackData("rep_min_dec"),
+                    new InlineKeyboardButton("Rep After Min: " + repMin + "s").callbackData("noop"),
+                    new InlineKeyboardButton("+5s").callbackData("rep_min_inc")
+                },
+                new InlineKeyboardButton[]{
+                    new InlineKeyboardButton("-5s").callbackData("rep_max_dec"),
+                    new InlineKeyboardButton("Rep After Max: " + repMax + "s").callbackData("noop"),
+                    new InlineKeyboardButton("+5s").callbackData("rep_max_inc")
                 },
                 new InlineKeyboardButton[]{ new InlineKeyboardButton("🔙 Back").callbackData("back_main") }
         );

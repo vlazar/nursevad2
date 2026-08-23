@@ -64,6 +64,14 @@ public class VadService extends Service {
     private long reminderScheduledAt = 0;
     private long reminderTotalDelayMs = 0;
 
+    // Repeat Reminder fields
+    private List<AudioFile> repeatReminderFiles = new ArrayList<>();
+    private boolean userDidNotRespondToReminder = false;
+    private int repeatReminderIndex = 0;
+    private AudioFile lastPlayedReminderFile = null;
+    private boolean waitingForResponseAfterReminder = false;
+    private Runnable responseCheckRunnable = null;
+
     public static void startService(Context context) {
         Intent i = new Intent(context, VadService.class);
         ContextCompat.startForegroundService(context, i);
@@ -446,6 +454,19 @@ public class VadService extends Service {
             
             EventRepository.getInstance().addEvent(event);
 
+            // Check if user responded to a pending repeat reminder
+            if (waitingForResponseAfterReminder) {
+                DebugLogger.log("User responded to reminder. Clearing repeat state.");
+                waitingForResponseAfterReminder = false;
+                userDidNotRespondToReminder = false;
+                repeatReminderIndex = 0;
+                if (responseCheckRunnable != null) {
+                    handler.removeCallbacks(responseCheckRunnable);
+                    responseCheckRunnable = null;
+                }
+                scheduleReminder();
+            }
+
             // Clean up old WAV files to prevent memory/disk accumulation
             cleanupOldWavFiles();            
 
@@ -692,13 +713,44 @@ public class VadService extends Service {
                 playReminder();
             };
         }
-        
-        // Track when this timer was scheduled so we can calculate remaining time
-        reminderScheduledAt = SystemClock.elapsedRealtime();
-        reminderTotalDelayMs = delayMs;
-        
         DebugLogger.log("scheduleReminder called. Delay=" + delayMs + "ms");
         handler.postDelayed(reminderRunnable, delayMs);
+    }
+
+    private void scheduleResponseCheck() {
+        if (responseCheckRunnable != null) {
+            handler.removeCallbacks(responseCheckRunnable);
+        }
+        
+        boolean repeatEnabled = SettingsManager.getRepeatReminder(this);
+        int trigger = SettingsManager.getReminderTrigger(this);
+        
+        if (!repeatEnabled || trigger != 1) {
+            // No repeat logic, just schedule next reminder normally
+            scheduleReminder();
+            return;
+        }
+        
+        // Use "Repeat Reminder After" range for the response check timer
+        int min = SettingsManager.getRepeatReminderMin(this);
+        int max = SettingsManager.getRepeatReminderMax(this);
+        if (min > max) { int t = min; min = max; max = t; }
+        int steps = (max - min) / 5;
+        int randomSteps = steps > 0 ? new Random().nextInt(steps + 1) : 0;
+        int randomSecs = min + (randomSteps * 5);
+        long delayMs = randomSecs * 1000L;
+        
+        waitingForResponseAfterReminder = true;
+        
+        responseCheckRunnable = () -> {
+            DebugLogger.log("Response check timer FIRED. User did not respond to reminder.");
+            waitingForResponseAfterReminder = false;
+            userDidNotRespondToReminder = true;
+            playRepeatReminder();
+        };
+        
+        DebugLogger.log("scheduleResponseCheck called. Delay=" + delayMs + "ms");
+        handler.postDelayed(responseCheckRunnable, delayMs);
     }
 
     private void playReminder() {
@@ -713,22 +765,14 @@ public class VadService extends Service {
         
         AudioFile file = reminderQueue.remove(0);
         lastPlayedReminderUri = file.uri;
+        lastPlayedReminderFile = file; // Store for repeat logic
         DebugLogger.log("playReminder: " + file.displayName);
         
         EventRepository.getInstance().addEvent(new LogEvent(LogEvent.Type.REMINDER, file));
         TelegramManager.getInstance().sendTextMessage("🔵 Reminder " + file.displayName);
         
-        // Silent mode: log and notify, but skip audio playback
-        if (SettingsManager.isSilentMode(this)) {
-            DebugLogger.log("playReminder: Silent mode ON, skipping audio playback");
-            onPlaybackComplete();
-            return;
-        }
-
         isPaused = true;
         isProcessingResponse = true;
-        pauseReminderTimer(); 
-        
         EventBus.getInstance().postVolume(0);
         EventBus.getInstance().postDebug("Vol: 0% | VAD Prob: 0,000");
         EventBus.getInstance().postStatus("Playing Reminder...");
@@ -738,11 +782,96 @@ public class VadService extends Service {
             mediaPlayer = new MediaPlayer();
             mediaPlayer.setDataSource(this, Uri.parse(file.uri));
             mediaPlayer.prepare();
-            mediaPlayer.setOnCompletionListener(mp -> onPlaybackComplete());
+            mediaPlayer.setOnCompletionListener(mp -> {
+                isPaused = false;
+                isProcessingResponse = false;
+                EventBus.getInstance().postPlayingUri(null);
+                if (isRunning) EventBus.getInstance().postStatus("Listening...");
+                else EventBus.getInstance().postStatus("Idle");
+                
+                // Use response check instead of direct scheduleReminder for trigger=1
+                int trigger = SettingsManager.getReminderTrigger(this);
+                if (trigger == 1 && SettingsManager.getRepeatReminder(this)) {
+                    scheduleResponseCheck();
+                } else {
+                    resumeReminderTimer();
+                }
+            });
             mediaPlayer.start();
         } catch (Exception e) {
             DebugLogger.log("playReminder exception: " + e.getMessage());
-            onPlaybackComplete();
+            isPaused = false;
+            isProcessingResponse = false;
+            resumeReminderTimer();
+        }
+    }
+
+    private void playRepeatReminder() {
+        AudioFile fileToPlay = null;
+        
+        if (repeatReminderIndex == 0 && lastPlayedReminderFile != null) {
+            // First repeat: play the same reminder again
+            fileToPlay = lastPlayedReminderFile;
+            repeatReminderIndex = 1;
+        } else if (repeatReminderIndex >= 1 && repeatReminderFiles != null && !repeatReminderFiles.isEmpty()) {
+            // Subsequent repeats: play from Repeat subfolder
+            int fileIndex = repeatReminderIndex - 1;
+            if (fileIndex < repeatReminderFiles.size()) {
+                fileToPlay = repeatReminderFiles.get(fileIndex);
+                repeatReminderIndex++;
+            } else {
+                // No more repeat files, go back to normal flow
+                DebugLogger.log("No more repeat reminder files. Resuming normal flow.");
+                userDidNotRespondToReminder = false;
+                repeatReminderIndex = 0;
+                scheduleReminder();
+                return;
+            }
+        } else if (repeatReminderIndex >= 1) {
+            // No repeat files available, go back to normal
+            DebugLogger.log("No repeat reminder files available. Resuming normal flow.");
+            userDidNotRespondToReminder = false;
+            repeatReminderIndex = 0;
+            scheduleReminder();
+            return;
+        }
+        
+        if (fileToPlay == null) {
+            scheduleReminder();
+            return;
+        }
+        
+        DebugLogger.log("playRepeatReminder: " + fileToPlay.displayName + " (index=" + repeatReminderIndex + ")");
+        
+        EventRepository.getInstance().addEvent(new LogEvent(LogEvent.Type.REMINDER, fileToPlay));
+        TelegramManager.getInstance().sendTextMessage("🔵 Reminder " + fileToPlay.displayName);
+        
+        isPaused = true;
+        isProcessingResponse = true;
+        EventBus.getInstance().postVolume(0);
+        EventBus.getInstance().postDebug("Vol: 0% | VAD Prob: 0,000");
+        EventBus.getInstance().postStatus("Playing Reminder...");
+        
+        try {
+            if (mediaPlayer != null) mediaPlayer.release();
+            mediaPlayer = new MediaPlayer();
+            mediaPlayer.setDataSource(this, Uri.parse(fileToPlay.uri));
+            mediaPlayer.prepare();
+            mediaPlayer.setOnCompletionListener(mp -> {
+                isPaused = false;
+                isProcessingResponse = false;
+                EventBus.getInstance().postPlayingUri(null);
+                if (isRunning) EventBus.getInstance().postStatus("Listening...");
+                else EventBus.getInstance().postStatus("Idle");
+                // Schedule next response check
+                scheduleResponseCheck();
+            });
+            mediaPlayer.start();
+        } catch (Exception e) {
+            DebugLogger.log("playRepeatReminder exception: " + e.getMessage());
+            isPaused = false;
+            isProcessingResponse = false;
+            scheduleResponseCheck();
         }
     }
 
@@ -854,6 +983,8 @@ public class VadService extends Service {
         debugMsg.append("Rem:").append(reminderFiles.size());
 
         EventBus.getInstance().postDebug("Files found -> " + debugMsg.toString());
+
+        loadRepeatReminderFiles();
     }
 
     private void cleanupOldWavFiles() {
@@ -876,6 +1007,49 @@ public class VadService extends Service {
         } catch (Exception e) {
             DebugLogger.log("WAV cleanup error: " + e.getMessage());
         }
+    }
+
+    private void loadRepeatReminderFiles() {
+        repeatReminderFiles.clear();
+        String uriStr = SettingsManager.getFolderUri(this);
+        if (uriStr == null) return;
+        DocumentFile root = DocumentFile.fromTreeUri(this, Uri.parse(uriStr));
+        if (root == null) return;
+
+        DocumentFile remDir = root.findFile("Reminder");
+        if (remDir == null || !remDir.isDirectory()) {
+            DocumentFile[] rootFiles = root.listFiles();
+            if (rootFiles != null) {
+                for (DocumentFile f : rootFiles) {
+                    if (f.isDirectory() && f.getName() != null && f.getName().equalsIgnoreCase("Reminder")) {
+                        remDir = f; break;
+                    }
+                }
+            }
+        }
+        if (remDir == null || !remDir.isDirectory()) return;
+
+        DocumentFile repeatDir = remDir.findFile("Repeat");
+        if (repeatDir == null || !repeatDir.isDirectory()) return;
+
+        DocumentFile[] files = repeatDir.listFiles();
+        if (files == null) return;
+
+        // Sort by name
+        List<DocumentFile> sortedFiles = new ArrayList<>();
+        for (DocumentFile f : files) {
+            if (f != null && f.getName() != null && !f.getName().startsWith(".") && f.isFile()) {
+                sortedFiles.add(f);
+            }
+        }
+        Collections.sort(sortedFiles, (a, b) -> a.getName().compareToIgnoreCase(b.getName()));
+
+        for (DocumentFile f : sortedFiles) {
+            String name = f.getName();
+            String cleanName = name.replaceAll("\\.[^.]+$", "").replace("_", " ").replace("-", " ").replaceAll("\\s+", " ").trim();
+            repeatReminderFiles.add(new AudioFile(f.getUri().toString(), cleanName));
+        }
+        DebugLogger.log("Loaded " + repeatReminderFiles.size() + " repeat reminder files");
     }
 
     private void writeWavHeader(FileOutputStream out, int sampleRate, int channels, int bitsPerSample) throws IOException {
@@ -912,7 +1086,7 @@ public class VadService extends Service {
         raf.close();
     }
 
-    @Override
+     @Override
     public void onDestroy() {
         DebugLogger.log("Service onDestroy");
         isRunning = false;
@@ -920,6 +1094,10 @@ public class VadService extends Service {
         EventBus.getInstance().postVadRunning(false); 
         
         handler.removeCallbacksAndMessages(null);
+        if (responseCheckRunnable != null) {
+            handler.removeCallbacks(responseCheckRunnable);
+            responseCheckRunnable = null;
+        }
         if (fos != null) { try { fos.close(); } catch (IOException e) {} }
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
         if (audioRecord != null) audioRecord.stop();
