@@ -808,16 +808,10 @@ public class VadService extends Service {
 
     private void playRepeatReminder() {
         AudioFile fileToPlay = null;
-        
-        if (repeatReminderIndex == 0 && lastPlayedReminderFile != null) {
-            // First repeat: play the same reminder again
-            fileToPlay = lastPlayedReminderFile;
-            repeatReminderIndex = 1;
-        } else if (repeatReminderIndex >= 1 && repeatReminderFiles != null && !repeatReminderFiles.isEmpty()) {
-            // Subsequent repeats: play from Repeat subfolder
-            int fileIndex = repeatReminderIndex - 1;
-            if (fileIndex < repeatReminderFiles.size()) {
-                fileToPlay = repeatReminderFiles.get(fileIndex);
+
+        if (repeatReminderFiles != null && !repeatReminderFiles.isEmpty()) {
+            if (repeatReminderIndex < repeatReminderFiles.size()) {
+                fileToPlay = repeatReminderFiles.get(repeatReminderIndex);
                 repeatReminderIndex++;
             } else {
                 // No more repeat files, go back to normal flow
@@ -827,7 +821,7 @@ public class VadService extends Service {
                 scheduleReminder();
                 return;
             }
-        } else if (repeatReminderIndex >= 1) {
+        } else {
             // No repeat files available, go back to normal
             DebugLogger.log("No repeat reminder files available. Resuming normal flow.");
             userDidNotRespondToReminder = false;
@@ -835,23 +829,23 @@ public class VadService extends Service {
             scheduleReminder();
             return;
         }
-        
+
         if (fileToPlay == null) {
             scheduleReminder();
             return;
         }
-        
+
         DebugLogger.log("playRepeatReminder: " + fileToPlay.displayName + " (index=" + repeatReminderIndex + ")");
-        
+
         EventRepository.getInstance().addEvent(new LogEvent(LogEvent.Type.REMINDER, fileToPlay));
         TelegramManager.getInstance().sendTextMessage("🔵 Reminder " + fileToPlay.displayName);
-        
+
         isPaused = true;
         isProcessingResponse = true;
         EventBus.getInstance().postVolume(0);
         EventBus.getInstance().postDebug("Vol: 0% | VAD Prob: 0,000");
         EventBus.getInstance().postStatus("Playing Reminder...");
-        
+
         try {
             if (mediaPlayer != null) mediaPlayer.release();
             mediaPlayer = new MediaPlayer();
@@ -863,7 +857,7 @@ public class VadService extends Service {
                 EventBus.getInstance().postPlayingUri(null);
                 if (isRunning) EventBus.getInstance().postStatus("Listening...");
                 else EventBus.getInstance().postStatus("Idle");
-                // Schedule next response check
+                // Schedule next response check for repeat logic
                 scheduleResponseCheck();
             });
             mediaPlayer.start();
