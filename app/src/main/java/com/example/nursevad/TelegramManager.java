@@ -33,7 +33,6 @@ public class TelegramManager {
     private TelegramBot bot;
     private boolean isRunning = false;
     private Context appContext;
-    private static final boolean FORCE_DOWNLOAD_FAILURE = true; // ← Change to true to test
 
     public static synchronized TelegramManager getInstance() {
         if (instance == null) instance = new TelegramManager();
@@ -115,17 +114,6 @@ public class TelegramManager {
     }
 
     private void downloadAndQueueVoice(String fileId, String senderName) {
-        // TEMPORARY: Force download failure for testing
-        if (FORCE_DOWNLOAD_FAILURE) {
-            Log.e("TelegramManager", "FORCED download failure for testing.");
-            broadcastMessage("⚠️ Failed to download voice message from " + senderName);
-            Intent i = new Intent(appContext, VadService.class);
-            i.setAction("VOICE_DOWNLOAD_FAILED");
-            i.putExtra("SENDER", senderName);
-            appContext.startService(i);
-            return;
-        }
-
         bot.execute(new GetFile(fileId), new Callback<GetFile, GetFileResponse>() {
             @Override
             public void onResponse(GetFile request, GetFileResponse response) {
