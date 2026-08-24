@@ -50,27 +50,27 @@ public class VadService extends Service {
 
     private Handler handler = new Handler(Looper.getMainLooper());
     private Queue<String> telegramVoiceQueue = new LinkedList<>();
+    private boolean isPlayingTelegramVoice = false;
 
     private List<AudioFile> introFiles = new ArrayList<>();
     private Queue<AudioFile> introQueue = new LinkedList<>();
     private List<AudioFile> reminderFiles = new ArrayList<>();
     private List<AudioFile> reminderQueue = new ArrayList<>();
+    private List<AudioFile> repeatReminderFiles = new ArrayList<>();
+    
     private String lastPlayedReminderUri = null;
+    private AudioFile lastPlayedReminderFile = null;
+    private boolean userDidNotRespondToReminder = false;
+    private int repeatReminderIndex = 0;
+    private boolean waitingForResponseAfterReminder = false;
     
     private Runnable speechDelayRunnable;
     private Runnable reminderRunnable;
+    private Runnable responseCheckRunnable = null;
     private boolean isReminderArmed = false;
-
+    
     private long reminderScheduledAt = 0;
     private long reminderTotalDelayMs = 0;
-
-    // Repeat Reminder fields
-    private List<AudioFile> repeatReminderFiles = new ArrayList<>();
-    private boolean userDidNotRespondToReminder = false;
-    private int repeatReminderIndex = 0;
-    private AudioFile lastPlayedReminderFile = null;
-    private boolean waitingForResponseAfterReminder = false;
-    private Runnable responseCheckRunnable = null;
 
     public static void startService(Context context) {
         Intent i = new Intent(context, VadService.class);
@@ -133,7 +133,6 @@ public class VadService extends Service {
             if ("STOP".equals(intent.getAction())) {
                 DebugLogger.log("STOP action received. Stopping service and canceling timers.");
                 if (reminderRunnable != null) handler.removeCallbacks(reminderRunnable);
-                
                 EventBus.getInstance().postVadRunning(false); 
                 EventBus.getInstance().postVolume(0);
                 EventBus.getInstance().postDebug("Vol: 0% | VAD Prob: 0,000");
@@ -159,13 +158,19 @@ public class VadService extends Service {
                 }
                 return START_STICKY;
             }
+            if ("VOICE_DOWNLOAD_FAILED".equals(intent.getAction())) {
+                String sender = intent.getStringExtra("SENDER");
+                LogEvent event = new LogEvent(LogEvent.Type.TELEGRAM_VOICE, sender != null ? sender : "Telegram Bot", true);
+                EventRepository.getInstance().addEvent(event);
+                return START_STICKY;
+            }
             if ("STOP_PLAYBACK".equals(intent.getAction())) {
                 if (mediaPlayer != null) {
                     try { mediaPlayer.stop(); } catch (Exception e) {}
                     mediaPlayer.release();
                     mediaPlayer = null;
                 }
-                telegramVoiceQueue.clear(); 
+                // FIX Bug 3: Do NOT clear the telegramVoiceQueue here
                 onPlaybackComplete();
                 return START_STICKY;
             }
@@ -185,7 +190,6 @@ public class VadService extends Service {
             
             loadAudioFiles();
             
-            // Load Speaker Embeddings if configured
             String embUri = SettingsManager.getEmbeddingsFolderUri(this);
             if (embUri != null) {
                 SpeakerVerifier.getInstance(this).loadEmbeddings(embUri);
@@ -222,7 +226,6 @@ public class VadService extends Service {
         stopSelf();
     }
 
-    // --- Helper Methods for Reminder Timer Pause/Resume ---
     private void pauseReminderTimer() {
         if (SettingsManager.getReminderTrigger(this) == 1 && reminderRunnable != null) {
             handler.removeCallbacks(reminderRunnable);
@@ -250,7 +253,7 @@ public class VadService extends Service {
             }
         }
     }
-    
+
     private void startRecording() {
         try {
             int bufferSize = AudioRecord.getMinBufferSize(16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
@@ -271,12 +274,10 @@ public class VadService extends Service {
                             ignoreFrames = 10; 
                             continue; 
                         }
-                        
                         if (ignoreFrames > 0) {
                             ignoreFrames--;
                             continue; 
                         }
-                        
                         processAudio(buffer);
                     }
                 }
@@ -330,11 +331,8 @@ public class VadService extends Service {
             if (!waitForEnd) {
                 isProcessingResponse = true;
                 speechDelayRunnable = () -> triggerResponse();
-                if (delaySec > 0) {
-                    handler.postDelayed(speechDelayRunnable, delaySec * 1000L);
-                } else {
-                    handler.post(speechDelayRunnable);
-                }
+                if (delaySec > 0) handler.postDelayed(speechDelayRunnable, delaySec * 1000L);
+                else handler.post(speechDelayRunnable);
             }
         }
 
@@ -359,10 +357,7 @@ public class VadService extends Service {
                 isSpeaking = false;
                 
                 if (fos != null) {
-                    try {
-                        fos.close();
-                        updateWavHeader(recordedFile);
-                    } catch (IOException e) {}
+                    try { fos.close(); updateWavHeader(recordedFile); } catch (IOException e) {}
                     fos = null;
                 }
                 
@@ -372,11 +367,8 @@ public class VadService extends Service {
                 if (waitForEnd) {
                     isProcessingResponse = true;
                     speechDelayRunnable = () -> triggerResponse();
-                    if (delaySec > 0) {
-                        handler.postDelayed(speechDelayRunnable, delaySec * 1000L);
-                    } else {
-                        handler.post(speechDelayRunnable);
-                    }
+                    if (delaySec > 0) handler.postDelayed(speechDelayRunnable, delaySec * 1000L);
+                    else handler.post(speechDelayRunnable);
                 }
             }
         }
@@ -400,9 +392,8 @@ public class VadService extends Service {
             } else {
                 isProcessingResponse = false;
                 isPaused = false;
-                if (!telegramVoiceQueue.isEmpty()) {
-                    playNextTelegramVoice();
-                } else {
+                if (!telegramVoiceQueue.isEmpty()) playNextTelegramVoice();
+                else {
                     EventBus.getInstance().postStatus("Listening...");
                     resumeReminderTimer();
                 }
@@ -429,54 +420,41 @@ public class VadService extends Service {
         final int finalLevel = level;
         final File finalRecordedFile = recordedFile;
 
-        DebugLogger.log("triggerResponse: level=" + level + ", file=" + (file != null ? file.displayName : "null") + 
-                ", recordedFile=" + (recordedFile != null ? recordedFile.getAbsolutePath() : "null"));
-
         Runnable finalizeEvent = () -> {
             DebugLogger.log("finalizeEvent START. thread=" + Thread.currentThread().getName());
             
             boolean isPoi = true;
             String embUri = SettingsManager.getEmbeddingsFolderUri(this);
             boolean useEmbeddings = SettingsManager.getUseEmbeddings(this);
-            if (useEmbeddings && embUri != null && finalRecordedFile != null && finalRecordedFile.exists()) {                DebugLogger.log("finalizeEvent: Running speaker verification...");
+            if (useEmbeddings && embUri != null && finalRecordedFile != null && finalRecordedFile.exists()) {
                 isPoi = SpeakerVerifier.getInstance(this).verify(finalRecordedFile);
-                DebugLogger.log("finalizeEvent: Verification result isPoi=" + isPoi);
-            } else {
-                DebugLogger.log("finalizeEvent: No embeddings folder or no recorded file. Skipping verification.");
             }
             
             LogEvent event = new LogEvent(LogEvent.Type.SPEECH, finalLevel, finalFile, finalRecordedUri);
             event.isPoni = !isPoi;
             if (!isPoi) event.displayName = "PONI is talking";
             
-            DebugLogger.log("finalizeEvent: Adding SPEECH event. isPoni=" + event.isPoni + 
-                    ", level=" + event.level + ", display=" + event.displayName);
-            
             EventRepository.getInstance().addEvent(event);
-
-            // Check if user responded to a pending repeat reminder
-            if (waitingForResponseAfterReminder) {
-                DebugLogger.log("User responded to reminder. Clearing repeat state.");
-                waitingForResponseAfterReminder = false;
-                userDidNotRespondToReminder = false;
-                repeatReminderIndex = 0;
-                if (responseCheckRunnable != null) {
-                    handler.removeCallbacks(responseCheckRunnable);
-                    responseCheckRunnable = null;
-                }
-                scheduleReminder();
-            }
-
-            // Clean up old WAV files to prevent memory/disk accumulation
-            cleanupOldWavFiles();            
-
+            cleanupOldWavFiles();
+            
             if (finalRecordedFile != null && finalRecordedFile.exists()) {
                 String responseName = isPoi ? (finalFile != null ? finalFile.displayName : null) : "PONI is talking";
                 TelegramManager.getInstance().sendAudioEvent(Uri.fromFile(finalRecordedFile).toString(), finalLevel, responseName, !isPoi);
             }
             
             if (isPoi) {
-                DebugLogger.log("finalizeEvent: POI detected. Proceeding with normal response.");
+                if (waitingForResponseAfterReminder) {
+                    DebugLogger.log("User responded to reminder. Clearing repeat state.");
+                    waitingForResponseAfterReminder = false;
+                    userDidNotRespondToReminder = false;
+                    repeatReminderIndex = 0;
+                    if (responseCheckRunnable != null) {
+                        handler.removeCallbacks(responseCheckRunnable);
+                        responseCheckRunnable = null;
+                    }
+                    scheduleReminder();
+                }
+
                 boolean playedSomething = false;
                 if (SettingsManager.getReminderTrigger(this) == 0) {
                     if (isReminderArmed) {
@@ -501,14 +479,10 @@ public class VadService extends Service {
                 if (!playedSomething) {
                     isPaused = false;
                     isProcessingResponse = false;
-                    if (!telegramVoiceQueue.isEmpty()) {
-                        playNextTelegramVoice();
-                    } else {
-                        if (finalFile == null) {
-                            EventBus.getInstance().postStatus("Listening... (No files in Level " + finalLevel + ")");
-                        } else {
-                            EventBus.getInstance().postStatus("Listening...");
-                        }
+                    if (!telegramVoiceQueue.isEmpty()) playNextTelegramVoice();
+                    else {
+                        if (finalFile == null) EventBus.getInstance().postStatus("Listening... (No files in Level " + finalLevel + ")");
+                        else EventBus.getInstance().postStatus("Listening...");
                         resumeReminderTimer();
                     }
                 }
@@ -516,19 +490,31 @@ public class VadService extends Service {
                 DebugLogger.log("finalizeEvent: PONI detected. Skipping response audio. NOT resetting reminder timer.");
                 isPaused = false;
                 isProcessingResponse = false;
-                if (!telegramVoiceQueue.isEmpty()) {
-                    playNextTelegramVoice();
-                } else {
+                if (!telegramVoiceQueue.isEmpty()) playNextTelegramVoice();
+                else {
                     EventBus.getInstance().postStatus("Listening...");
-                    // PONI: do NOT reset the timer, just resume with remaining time
                     resumeReminderTimerWithRemaining();
                 }
             }
-            
             DebugLogger.log("finalizeEvent END.");
         };
 
         new Thread(finalizeEvent).start();
+    }
+
+    private void cleanupOldWavFiles() {
+        try {
+            File cacheDir = getCacheDir();
+            File[] wavFiles = cacheDir.listFiles((dir, name) -> name.startsWith("speech_") && name.endsWith(".wav"));
+            if (wavFiles == null || wavFiles.length <= 20) return;
+            java.util.Arrays.sort(wavFiles, (a, b) -> Long.compare(a.lastModified(), b.lastModified()));
+            int toDelete = wavFiles.length - 20;
+            for (int i = 0; i < toDelete; i++) {
+                if (wavFiles[i].delete()) DebugLogger.log("Cleaned up old WAV: " + wavFiles[i].getName());
+            }
+        } catch (Exception e) {
+            DebugLogger.log("WAV cleanup error: " + e.getMessage());
+        }
     }
 
     private int getLevel(int percent) {
@@ -542,13 +528,11 @@ public class VadService extends Service {
 
     private void triggerPlay(AudioFile file) {
         if (file == null) return;
-        DebugLogger.log("triggerPlay: " + file.displayName);
         isPaused = true;
         pauseReminderTimer(); 
         
         EventBus.getInstance().postVolume(0);
         EventBus.getInstance().postDebug("Vol: 0% | VAD Prob: 0,000");
-        
         EventBus.getInstance().postStatus("Playing: " + file.displayName);
         EventBus.getInstance().postPlayingUri(file.uri);
         
@@ -570,18 +554,14 @@ public class VadService extends Service {
         
         EventBus.getInstance().postVolume(0);
         EventBus.getInstance().postDebug("Vol: 0% | VAD Prob: 0,000");
-        
         EventBus.getInstance().postPlayingUri(uriString);
+        
         try {
             if (mediaPlayer != null) mediaPlayer.release();
             mediaPlayer = new MediaPlayer();
-            
             Uri uri = Uri.parse(uriString);
-            if ("file".equals(uri.getScheme())) {
-                mediaPlayer.setDataSource(uri.getPath());
-            } else {
-                mediaPlayer.setDataSource(this, uri);
-            }
+            if ("file".equals(uri.getScheme())) mediaPlayer.setDataSource(uri.getPath());
+            else mediaPlayer.setDataSource(this, uri);
             
             mediaPlayer.prepare();
             mediaPlayer.setOnCompletionListener(mp -> onPlaybackComplete());
@@ -593,6 +573,7 @@ public class VadService extends Service {
     }
 
     private void onPlaybackComplete() {
+        isPlayingTelegramVoice = false;
         DebugLogger.log("onPlaybackComplete. Queue empty=" + telegramVoiceQueue.isEmpty());
         if (!telegramVoiceQueue.isEmpty()) {
             playNextTelegramVoice();
@@ -602,7 +583,6 @@ public class VadService extends Service {
             EventBus.getInstance().postPlayingUri(null);
             if (isRunning) EventBus.getInstance().postStatus("Listening...");
             else EventBus.getInstance().postStatus("Idle");
-            
             resumeReminderTimer();
         }
     }
@@ -614,6 +594,7 @@ public class VadService extends Service {
             return;
         }
         
+        isPlayingTelegramVoice = true;
         isPaused = true;
         isProcessingResponse = true; 
         pauseReminderTimer(); 
@@ -621,7 +602,6 @@ public class VadService extends Service {
         EventBus.getInstance().postVolume(0);
         EventBus.getInstance().postDebug("Vol: 0% | VAD Prob: 0,000");
         EventBus.getInstance().postStatus("Playing Telegram Voice...");
-        
         EventBus.getInstance().postPlayingUri(Uri.fromFile(new File(path)).toString());
         
         try {
@@ -638,7 +618,6 @@ public class VadService extends Service {
 
     private void playNextIntro() {
         AudioFile file = introQueue.poll();
-        DebugLogger.log("playNextIntro: " + (file != null ? file.displayName : "null"));
         if (file == null) {
             isProcessingResponse = false;
             isPaused = false; 
@@ -650,13 +629,11 @@ public class VadService extends Service {
         EventRepository.getInstance().addEvent(new LogEvent(LogEvent.Type.INTRO, file));
         TelegramManager.getInstance().sendTextMessage("🔵 Intro " + file.displayName);
         
-        // Silent mode: log and notify, but skip audio playback and move to next intro file
         if (SettingsManager.isSilentMode(this)) {
-            DebugLogger.log("playNextIntro: Silent mode ON, skipping audio playback");
             playNextIntro();
             return;
         }
-
+        
         isPaused = true;
         isProcessingResponse = true;
         pauseReminderTimer(); 
@@ -680,9 +657,7 @@ public class VadService extends Service {
     private void scheduleReminder() {
         if (reminderFiles == null || reminderFiles.isEmpty()) return;
         
-        if (reminderRunnable != null) {
-            handler.removeCallbacks(reminderRunnable);
-        }
+        if (reminderRunnable != null) handler.removeCallbacks(reminderRunnable);
         
         int trigger = SettingsManager.getReminderTrigger(this);
         long delayMs;
@@ -713,25 +688,25 @@ public class VadService extends Service {
                 playReminder();
             };
         }
+        
+        reminderScheduledAt = SystemClock.elapsedRealtime();
+        reminderTotalDelayMs = delayMs;
+        
         DebugLogger.log("scheduleReminder called. Delay=" + delayMs + "ms");
         handler.postDelayed(reminderRunnable, delayMs);
     }
 
     private void scheduleResponseCheck() {
-        if (responseCheckRunnable != null) {
-            handler.removeCallbacks(responseCheckRunnable);
-        }
+        if (responseCheckRunnable != null) handler.removeCallbacks(responseCheckRunnable);
         
         boolean repeatEnabled = SettingsManager.getRepeatReminder(this);
         int trigger = SettingsManager.getReminderTrigger(this);
         
         if (!repeatEnabled || trigger != 1) {
-            // No repeat logic, just schedule next reminder normally
             scheduleReminder();
             return;
         }
         
-        // Use "Repeat Reminder After" range for the response check timer
         int min = SettingsManager.getRepeatReminderMin(this);
         int max = SettingsManager.getRepeatReminderMax(this);
         if (min > max) { int t = min; min = max; max = t; }
@@ -753,59 +728,6 @@ public class VadService extends Service {
         handler.postDelayed(responseCheckRunnable, delayMs);
     }
 
-    private void playReminder() {
-        if (reminderFiles == null || reminderFiles.isEmpty()) return;
-        if (reminderQueue == null || reminderQueue.isEmpty()) {
-            reminderQueue = new ArrayList<>(reminderFiles);
-            Collections.shuffle(reminderQueue);
-            if (lastPlayedReminderUri != null && reminderQueue.size() > 1 && reminderQueue.get(0).uri.equals(lastPlayedReminderUri)) {
-                Collections.swap(reminderQueue, 0, 1);
-            }
-        }
-        
-        AudioFile file = reminderQueue.remove(0);
-        lastPlayedReminderUri = file.uri;
-        lastPlayedReminderFile = file; // Store for repeat logic
-        DebugLogger.log("playReminder: " + file.displayName);
-        
-        EventRepository.getInstance().addEvent(new LogEvent(LogEvent.Type.REMINDER, file));
-        TelegramManager.getInstance().sendTextMessage("🔵 Reminder " + file.displayName);
-        
-        isPaused = true;
-        isProcessingResponse = true;
-        EventBus.getInstance().postVolume(0);
-        EventBus.getInstance().postDebug("Vol: 0% | VAD Prob: 0,000");
-        EventBus.getInstance().postStatus("Playing Reminder...");
-        
-        try {
-            if (mediaPlayer != null) mediaPlayer.release();
-            mediaPlayer = new MediaPlayer();
-            mediaPlayer.setDataSource(this, Uri.parse(file.uri));
-            mediaPlayer.prepare();
-            mediaPlayer.setOnCompletionListener(mp -> {
-                isPaused = false;
-                isProcessingResponse = false;
-                EventBus.getInstance().postPlayingUri(null);
-                if (isRunning) EventBus.getInstance().postStatus("Listening...");
-                else EventBus.getInstance().postStatus("Idle");
-                
-                // Use response check instead of direct scheduleReminder for trigger=1
-                int trigger = SettingsManager.getReminderTrigger(this);
-                if (trigger == 1 && SettingsManager.getRepeatReminder(this)) {
-                    scheduleResponseCheck();
-                } else {
-                    resumeReminderTimer();
-                }
-            });
-            mediaPlayer.start();
-        } catch (Exception e) {
-            DebugLogger.log("playReminder exception: " + e.getMessage());
-            isPaused = false;
-            isProcessingResponse = false;
-            resumeReminderTimer();
-        }
-    }
-
     private void playRepeatReminder() {
         AudioFile fileToPlay = null;
 
@@ -814,7 +736,6 @@ public class VadService extends Service {
                 fileToPlay = repeatReminderFiles.get(repeatReminderIndex);
                 repeatReminderIndex++;
             } else {
-                // No more repeat files, go back to normal flow
                 DebugLogger.log("No more repeat reminder files. Resuming normal flow.");
                 userDidNotRespondToReminder = false;
                 repeatReminderIndex = 0;
@@ -822,7 +743,6 @@ public class VadService extends Service {
                 return;
             }
         } else {
-            // No repeat files available, go back to normal
             DebugLogger.log("No repeat reminder files available. Resuming normal flow.");
             userDidNotRespondToReminder = false;
             repeatReminderIndex = 0;
@@ -857,7 +777,6 @@ public class VadService extends Service {
                 EventBus.getInstance().postPlayingUri(null);
                 if (isRunning) EventBus.getInstance().postStatus("Listening...");
                 else EventBus.getInstance().postStatus("Idle");
-                // Schedule next response check for repeat logic
                 scheduleResponseCheck();
             });
             mediaPlayer.start();
@@ -866,6 +785,69 @@ public class VadService extends Service {
             isPaused = false;
             isProcessingResponse = false;
             scheduleResponseCheck();
+        }
+    }
+
+    private void playReminder() {
+        // FIX Bug 2: Do not interrupt if a Voice Message is playing or queued
+        if (isPlayingTelegramVoice || !telegramVoiceQueue.isEmpty()) {
+            DebugLogger.log("playReminder: Skipped because Voice Message is playing/queued.");
+            return;
+        }
+
+        if (reminderFiles == null || reminderFiles.isEmpty()) return;
+        if (reminderQueue == null || reminderQueue.isEmpty()) {
+            reminderQueue = new ArrayList<>(reminderFiles);
+            Collections.shuffle(reminderQueue);
+            if (lastPlayedReminderUri != null && reminderQueue.size() > 1 && reminderQueue.get(0).uri.equals(lastPlayedReminderUri)) {
+                Collections.swap(reminderQueue, 0, 1);
+            }
+        }
+        
+        AudioFile file = reminderQueue.remove(0);
+        lastPlayedReminderUri = file.uri;
+        lastPlayedReminderFile = file; 
+        DebugLogger.log("playReminder: " + file.displayName);
+        
+        EventRepository.getInstance().addEvent(new LogEvent(LogEvent.Type.REMINDER, file));
+        TelegramManager.getInstance().sendTextMessage("🔵 Reminder " + file.displayName);
+        
+        if (SettingsManager.isSilentMode(this)) {
+            onPlaybackComplete();
+            return;
+        }
+        
+        isPaused = true;
+        isProcessingResponse = true;
+        EventBus.getInstance().postVolume(0);
+        EventBus.getInstance().postDebug("Vol: 0% | VAD Prob: 0,000");
+        EventBus.getInstance().postStatus("Playing Reminder...");
+        
+        try {
+            if (mediaPlayer != null) mediaPlayer.release();
+            mediaPlayer = new MediaPlayer();
+            mediaPlayer.setDataSource(this, Uri.parse(file.uri));
+            mediaPlayer.prepare();
+            mediaPlayer.setOnCompletionListener(mp -> {
+                isPaused = false;
+                isProcessingResponse = false;
+                EventBus.getInstance().postPlayingUri(null);
+                if (isRunning) EventBus.getInstance().postStatus("Listening...");
+                else EventBus.getInstance().postStatus("Idle");
+                
+                int trigger = SettingsManager.getReminderTrigger(this);
+                if (trigger == 1 && SettingsManager.getRepeatReminder(this)) {
+                    scheduleResponseCheck();
+                } else {
+                    resumeReminderTimer();
+                }
+            });
+            mediaPlayer.start();
+        } catch (Exception e) {
+            DebugLogger.log("playReminder exception: " + e.getMessage());
+            isPaused = false;
+            isProcessingResponse = false;
+            resumeReminderTimer();
         }
     }
 
@@ -976,31 +958,10 @@ public class VadService extends Service {
         }
         debugMsg.append("Rem:").append(reminderFiles.size());
 
-        EventBus.getInstance().postDebug("Files found -> " + debugMsg.toString());
-
         loadRepeatReminderFiles();
-    }
+        debugMsg.append(" RepRem:").append(repeatReminderFiles.size());
 
-    private void cleanupOldWavFiles() {
-        try {
-            File cacheDir = getCacheDir();
-            File[] wavFiles = cacheDir.listFiles((dir, name) -> name.startsWith("speech_") && name.endsWith(".wav"));
-            if (wavFiles == null || wavFiles.length <= 20) return;
-            
-            // Sort by last modified time (oldest first)
-            java.util.Arrays.sort(wavFiles, (a, b) -> Long.compare(a.lastModified(), b.lastModified()));
-            
-            // Delete oldest files, keeping only the 20 most recent
-            int toDelete = wavFiles.length - 20;
-            for (int i = 0; i < toDelete; i++) {
-                boolean deleted = wavFiles[i].delete();
-                if (deleted) {
-                    DebugLogger.log("Cleaned up old WAV: " + wavFiles[i].getName());
-                }
-            }
-        } catch (Exception e) {
-            DebugLogger.log("WAV cleanup error: " + e.getMessage());
-        }
+        EventBus.getInstance().postDebug("Files found -> " + debugMsg.toString());
     }
 
     private void loadRepeatReminderFiles() {
@@ -1029,7 +990,6 @@ public class VadService extends Service {
         DocumentFile[] files = repeatDir.listFiles();
         if (files == null) return;
 
-        // Sort by name
         List<DocumentFile> sortedFiles = new ArrayList<>();
         for (DocumentFile f : files) {
             if (f != null && f.getName() != null && !f.getName().startsWith(".") && f.isFile()) {
@@ -1080,7 +1040,7 @@ public class VadService extends Service {
         raf.close();
     }
 
-     @Override
+    @Override
     public void onDestroy() {
         DebugLogger.log("Service onDestroy");
         isRunning = false;
