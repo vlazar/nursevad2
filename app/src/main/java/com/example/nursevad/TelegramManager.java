@@ -35,6 +35,7 @@ public class TelegramManager {
     private TelegramBot bot;
     private boolean isRunning = false;
     private Context appContext;
+    private static final boolean FORCE_DOWNLOAD_FAILURE = true; // ← TEST FLAG
 
     public static synchronized TelegramManager getInstance() {
         if (instance == null) instance = new TelegramManager();
@@ -139,6 +140,14 @@ public class TelegramManager {
 
     private void downloadWithRetry(String fileId, String senderName, int attempt) {
         final int MAX_RETRIES = 3;
+
+        // ===== TEMPORARY TEST: force download failure =====
+        if (FORCE_DOWNLOAD_FAILURE) {
+            Log.w("TelegramManager", "TEST: Simulating download failure, attempt=" + (attempt + 1));
+            handleDownloadRetry(fileId, senderName, attempt, MAX_RETRIES);
+            return;
+        }
+        // ===== END TEST =====
 
         bot.execute(new GetFile(fileId), new Callback<GetFile, GetFileResponse>() {
             @Override
