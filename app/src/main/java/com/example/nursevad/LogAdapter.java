@@ -27,13 +27,18 @@ public class LogAdapter extends ListAdapter<LogEvent, LogAdapter.ViewHolder> {
 
     public LogAdapter(OnPlayClickListener listener) {
         super(new DiffUtil.ItemCallback<LogEvent>() {
-            @Override public boolean areItemsTheSame(@NonNull LogEvent oldItem, @NonNull LogEvent newItem) {
+            @Override
+            public boolean areItemsTheSame(@NonNull LogEvent oldItem, @NonNull LogEvent newItem) {
                 return oldItem.id.equals(newItem.id);
             }
-            @Override public boolean areContentsTheSame(@NonNull LogEvent oldItem, @NonNull LogEvent newItem) {
-                // Simplified comparison to reduce DiffUtil overhead
-                return oldItem.id.equals(newItem.id) && 
-                       oldItem.isPoni == newItem.isPoni;
+            @Override
+            public boolean areContentsTheSame(@NonNull LogEvent oldItem, @NonNull LogEvent newItem) {
+                return oldItem.id.equals(newItem.id) &&
+                       oldItem.type == newItem.type &&
+                       oldItem.level == newItem.level &&
+                       oldItem.isPoni == newItem.isPoni &&
+                       (oldItem.displayName != null ? oldItem.displayName.equals(newItem.displayName) : newItem.displayName == null) &&
+                       (oldItem.recordedSpeechUri != null ? oldItem.recordedSpeechUri.equals(newItem.recordedSpeechUri) : newItem.recordedSpeechUri == null);
             }
         });
         this.listener = listener;
@@ -41,19 +46,23 @@ public class LogAdapter extends ListAdapter<LogEvent, LogAdapter.ViewHolder> {
 
     public void setPlayingUri(String uri) { this.currentPlayingUri = uri; notifyDataSetChanged(); }
 
-    @NonNull @Override public ViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
+    @NonNull
+    @Override
+    public ViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
         return new ViewHolder(LayoutInflater.from(parent.getContext()).inflate(R.layout.item_log, parent, false));
     }
 
-    @Override public void onBindViewHolder(@NonNull ViewHolder holder, int position) {
-        LogEvent event = getItem(position);
-        DebugLogger.log("LogAdapter BIND pos=" + position + " type=" + event.type + 
-                " id=" + event.id + " ts=" + event.timestamp + " isPoni=" + event.isPoni);
-        holder.bind(event);
+    @Override
+    public void onBindViewHolder(@NonNull ViewHolder holder, int position) {
+        holder.bind(getItem(position));
     }
 
     class ViewHolder extends RecyclerView.ViewHolder {
-        ImageView swatch; TextView tvTitle; TextView tvPlayed; ImageButton btnPlay;
+        ImageView swatch;
+        TextView tvTitle;
+        TextView tvPlayed;
+        ImageButton btnPlay;
+
         ViewHolder(@NonNull View itemView) {
             super(itemView);
             swatch = itemView.findViewById(R.id.swatch);
@@ -64,7 +73,7 @@ public class LogAdapter extends ListAdapter<LogEvent, LogAdapter.ViewHolder> {
 
         void bind(LogEvent event) {
             String time = sdf.format(new Date(event.timestamp));
-            
+
             // RESET ALL visual properties first to prevent recycling artifacts
             swatch.setBackgroundColor(Color.TRANSPARENT);
             swatch.setImageResource(0);
@@ -79,7 +88,7 @@ public class LogAdapter extends ListAdapter<LogEvent, LogAdapter.ViewHolder> {
             btnPlay.setVisibility(View.INVISIBLE);
             btnPlay.setOnClickListener(null);
             itemView.setBackgroundColor(Color.TRANSPARENT);
-            
+
             if (event.type == LogEvent.Type.SPEECH) {
                 if (event.isPoni) {
                     swatch.setBackgroundColor(Color.GRAY);
@@ -90,15 +99,15 @@ public class LogAdapter extends ListAdapter<LogEvent, LogAdapter.ViewHolder> {
                     tvTitle.setTextColor(Color.BLACK);
                     tvPlayed.setTextColor(Color.DKGRAY);
                 }
-                
+
                 tvTitle.setText(time + " - Level " + event.level);
                 tvTitle.setTypeface(null, android.graphics.Typeface.NORMAL);
-                
+
                 if (event.displayName != null && !event.displayName.isEmpty()) {
                     tvPlayed.setText(event.displayName);
                     tvPlayed.setVisibility(View.VISIBLE);
                 }
-                
+
                 boolean isPlaying = event.recordedSpeechUri != null && event.recordedSpeechUri.equals(currentPlayingUri);
                 if (!event.isPoni) {
                     btnPlay.setVisibility(View.VISIBLE);
@@ -150,6 +159,17 @@ public class LogAdapter extends ListAdapter<LogEvent, LogAdapter.ViewHolder> {
                 tvPlayed.setText(event.displayName);
                 tvPlayed.setTextColor(Color.DKGRAY);
                 tvPlayed.setVisibility(View.VISIBLE);
+
+            } else if (event.type == LogEvent.Type.WARNING) {
+                itemView.setBackgroundColor(Color.parseColor("#FFF3E0"));
+                swatch.setBackgroundColor(Color.TRANSPARENT);
+                tvTitle.setText(time + " - Warning");
+                tvTitle.setTextColor(Color.parseColor("#E65100"));
+                tvTitle.setTypeface(null, android.graphics.Typeface.BOLD);
+                tvPlayed.setText(event.displayName);
+                tvPlayed.setTextColor(Color.DKGRAY);
+                tvPlayed.setVisibility(View.VISIBLE);
+                btnPlay.setVisibility(View.INVISIBLE);
 
             } else if (event.type == LogEvent.Type.START) {
                 tvTitle.setText(time + " - Start");
