@@ -4,7 +4,7 @@ import java.util.UUID;
 
 public class LogEvent {
     public enum Type { SPEECH, START, STOP, TELEGRAM_VOICE, INTRO, REMINDER }
-    public String id; 
+    public String id; // Unique ID for DiffUtil
     public Type type;
     public long timestamp;
     public int level;
@@ -13,7 +13,6 @@ public class LogEvent {
     public String recordedSpeechUri; 
     public String senderName; 
     public boolean isPoni = false;
-    public boolean isDownloadError = false;
 
     public LogEvent(Type type) {
         this.id = UUID.randomUUID().toString();
@@ -40,20 +39,9 @@ public class LogEvent {
         this.id = UUID.randomUUID().toString();
         this.type = type;
         this.timestamp = System.currentTimeMillis();
-        if (filePath != null) {
-            this.recordedSpeechUri = android.net.Uri.fromFile(new java.io.File(filePath)).toString();
-        }
+        this.recordedSpeechUri = android.net.Uri.fromFile(new java.io.File(filePath)).toString();
         this.senderName = senderName;
         this.displayName = "Voice Message";
-    }
-
-    public LogEvent(Type type, String senderName, boolean isError) {
-        this.id = UUID.randomUUID().toString();
-        this.type = type;
-        this.timestamp = System.currentTimeMillis();
-        this.senderName = senderName;
-        this.displayName = isError ? "Failed to download voice message" : "Voice Message";
-        this.isDownloadError = isError;
     }
 
     public LogEvent(Type type, AudioFile file) {

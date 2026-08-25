@@ -58,14 +58,19 @@ public class TelegramManager {
             bot.setUpdatesListener(updates -> {
                 for (Update update : updates) {
                     try {
-                        if (update.message() != null) handleMessage(update.message());
-                        else if (update.callbackQuery() != null) handleCallback(update.callbackQuery());
+                        if (update.message() != null) {
+                            handleMessage(update.message());
+                        } else if (update.callbackQuery() != null) {
+                            handleCallback(update.callbackQuery());
+                        }
                     } catch (Exception ex) {
                         Log.e("TelegramManager", "Error processing update", ex);
                     }
                 }
                 return UpdatesListener.CONFIRMED_UPDATES_ALL;
-            }, e -> Log.e("TelegramManager", "Telegram Bot Error: " + e.getMessage()));
+            }, e -> {
+                Log.e("TelegramManager", "Telegram Bot Error: " + e.getMessage());
+            });
             
         } catch (Throwable t) {
             Log.e("TelegramManager", "Fatal error starting Telegram Bot", t);
@@ -74,13 +79,18 @@ public class TelegramManager {
     }
 
     public void stop() {
-        if (bot != null) { bot.shutdown(); bot = null; }
+        if (bot != null) {
+            bot.shutdown();
+            bot = null;
+        }
         isRunning = false;
     }
 
     public boolean isBotRunning() { return isRunning; }
 
-    private boolean isAuthorized(long userId, Set<Long> allowedIds) { return allowedIds.contains(userId); }
+    private boolean isAuthorized(long userId, Set<Long> allowedIds) {
+        return allowedIds.contains(userId);
+    }
 
     private void handleMessage(Message message) {
         Set<Long> allowedIds = SettingsManager.getAllowedUserIds(appContext);
@@ -107,8 +117,16 @@ public class TelegramManager {
         Set<Long> allowedIds = SettingsManager.getAllowedUserIds(appContext);
         for (Long chatId : allowedIds) {
             bot.execute(new SendMessage(chatId, text), new Callback<SendMessage, SendResponse>() {
-                @Override public void onResponse(SendMessage request, SendResponse response) {}
-                @Override public void onFailure(SendMessage request, IOException e) {}
+                @Override
+                public void onResponse(SendMessage request, SendResponse response) {
+                    if (!response.isOk()) {
+                        Log.e("TelegramManager", "Failed to broadcast: " + response.description());
+                    }
+                }
+                @Override
+                public void onFailure(SendMessage request, IOException e) {
+                    Log.e("TelegramManager", "Network error broadcasting", e);
+                }
             });
         }
     }
@@ -121,50 +139,32 @@ public class TelegramManager {
                     String fileUrl = bot.getFullFilePath(response.file());
                     
                     new Thread(() -> {
-                        boolean success = false;
-                        int maxRetries = 3;
-                        for (int attempt = 1; attempt <= maxRetries; attempt++) {
-                            try {
-                                URL url = new URL(fileUrl);
-                                HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-                                connection.setConnectTimeout(5000);
-                                connection.setReadTimeout(5000);
-                                connection.connect();
-                                
-                                File tempFile = new File(appContext.getCacheDir(), "tg_voice_" + System.currentTimeMillis() + ".ogg");
-                                FileOutputStream output = new FileOutputStream(tempFile);
-                                InputStream input = connection.getInputStream();
-                                
-                                byte[] data = new byte[4096];
-                                int count;
-                                while ((count = input.read(data)) != -1) {
-                                    output.write(data, 0, count);
-                                }
-                                output.close();
-                                input.close();
-                                connection.disconnect();
-                                
-                                Intent i = new Intent(appContext, VadService.class);
-                                i.setAction("PLAY_TELEGRAM_VOICE");
-                                i.putExtra("PATH", tempFile.getAbsolutePath());
-                                i.putExtra("SENDER", senderName);
-                                appContext.startService(i);
-                                success = true;
-                                break;
-                            } catch (Exception e) {
-                                Log.e("TelegramManager", "Download attempt " + attempt + " failed", e);
-                                if (attempt < maxRetries) {
-                                    try { Thread.sleep(1000 * (long)Math.pow(2, attempt - 1)); } catch (InterruptedException ie) {}
-                                }
+                        try {
+                            URL url = new URL(fileUrl);
+                            HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+                            connection.connect();
+                            
+                            File tempFile = new File(appContext.getCacheDir(), "tg_voice_" + System.currentTimeMillis() + ".ogg");
+                            FileOutputStream output = new FileOutputStream(tempFile);
+                            InputStream input = connection.getInputStream();
+                            
+                            byte[] data = new byte[4096];
+                            int count;
+                            while ((count = input.read(data)) != -1) {
+                                output.write(data, 0, count);
                             }
-                        }
-                        if (!success) {
-                            Log.e("TelegramManager", "All download attempts failed for voice message.");
-                            broadcastMessage("⚠️ Failed to download voice message from " + senderName);
+                            output.close();
+                            input.close();
+                            connection.disconnect();
+                            
                             Intent i = new Intent(appContext, VadService.class);
-                            i.setAction("VOICE_DOWNLOAD_FAILED");
+                            i.setAction("PLAY_TELEGRAM_VOICE");
+                            i.putExtra("PATH", tempFile.getAbsolutePath());
                             i.putExtra("SENDER", senderName);
                             appContext.startService(i);
+                            
+                        } catch (Exception e) {
+                            Log.e("TelegramManager", "Failed to download voice", e);
                         }
                     }).start();
                 }
@@ -173,11 +173,6 @@ public class TelegramManager {
             @Override
             public void onFailure(GetFile request, IOException e) {
                 Log.e("TelegramManager", "Failed to get file info", e);
-                broadcastMessage("⚠️ Failed to get voice message info from " + senderName);
-                Intent i = new Intent(appContext, VadService.class);
-                i.setAction("VOICE_DOWNLOAD_FAILED");
-                i.putExtra("SENDER", senderName);
-                appContext.startService(i);
             }
         });
     }
@@ -272,9 +267,11 @@ public class TelegramManager {
         if (parts.length < 3) return;
         int level = Integer.parseInt(parts[1]) - 1; 
         boolean inc = parts[2].equals("inc");
+        
         int[] thresholds = SettingsManager.getThresholds(appContext);
         if (inc && thresholds[level] < 100) thresholds[level] += 5;
         if (!inc && thresholds[level] > 0) thresholds[level] -= 5;
+        
         SettingsManager.saveThresholds(appContext, thresholds);
     }
 
@@ -285,11 +282,22 @@ public class TelegramManager {
         String text = "*Nurse VAD Control Panel*\nState: " + state;
         
         InlineKeyboardMarkup markup = new InlineKeyboardMarkup(
-                new InlineKeyboardButton[]{ new InlineKeyboardButton("▶ Start").callbackData("start_vad"), new InlineKeyboardButton("⏹ Stop").callbackData("stop_vad") },
-                new InlineKeyboardButton[]{ new InlineKeyboardButton("Toggle Silent Mode (" + (silent ? "ON" : "OFF") + ")").callbackData("toggle_silent") },
-                new InlineKeyboardButton[]{ new InlineKeyboardButton("Use Embeddings (" + (useEmb ? "ON" : "OFF") + ")").callbackData("toggle_use_embeddings") },
-                new InlineKeyboardButton[]{ new InlineKeyboardButton("📊 Status").callbackData("status") },
-                new InlineKeyboardButton[]{ new InlineKeyboardButton("⚙️ Settings").callbackData("settings") }
+                new InlineKeyboardButton[]{
+                        new InlineKeyboardButton("▶ Start").callbackData("start_vad"),
+                        new InlineKeyboardButton("⏹ Stop").callbackData("stop_vad")
+                },
+                new InlineKeyboardButton[]{
+                        new InlineKeyboardButton("Toggle Silent Mode (" + (silent ? "ON" : "OFF") + ")").callbackData("toggle_silent")
+                },
+                new InlineKeyboardButton[]{
+                        new InlineKeyboardButton("Use Embeddings (" + (useEmb ? "ON" : "OFF") + ")").callbackData("toggle_use_embeddings")
+                },
+                new InlineKeyboardButton[]{
+                        new InlineKeyboardButton("📊 Status").callbackData("status")
+                },
+                new InlineKeyboardButton[]{
+                        new InlineKeyboardButton("⚙️ Settings").callbackData("settings")
+                }
         );
 
         SendMessage msg = new SendMessage(chatId, text).parseMode(ParseMode.Markdown).replyMarkup(markup);
@@ -304,14 +312,28 @@ public class TelegramManager {
         String text = "*Nurse VAD Control Panel*\nState: " + state;
         
         InlineKeyboardMarkup markup = new InlineKeyboardMarkup(
-                new InlineKeyboardButton[]{ new InlineKeyboardButton("▶ Start").callbackData("start_vad"), new InlineKeyboardButton("⏹ Stop").callbackData("stop_vad") },
-                new InlineKeyboardButton[]{ new InlineKeyboardButton("Toggle Silent Mode (" + (silent ? "ON" : "OFF") + ")").callbackData("toggle_silent") },
-                new InlineKeyboardButton[]{ new InlineKeyboardButton("Use Embeddings (" + (useEmb ? "ON" : "OFF") + ")").callbackData("toggle_use_embeddings") },
-                new InlineKeyboardButton[]{ new InlineKeyboardButton("📊 Status").callbackData("status") },
-                new InlineKeyboardButton[]{ new InlineKeyboardButton("⚙️ Settings").callbackData("settings") }
+                new InlineKeyboardButton[]{
+                        new InlineKeyboardButton("▶ Start").callbackData("start_vad"),
+                        new InlineKeyboardButton("⏹ Stop").callbackData("stop_vad")
+                },
+                new InlineKeyboardButton[]{
+                        new InlineKeyboardButton("Toggle Silent Mode (" + (silent ? "ON" : "OFF") + ")").callbackData("toggle_silent")
+                },
+                new InlineKeyboardButton[]{
+                        new InlineKeyboardButton("Use Embeddings (" + (useEmb ? "ON" : "OFF") + ")").callbackData("toggle_use_embeddings")
+                },
+                new InlineKeyboardButton[]{
+                        new InlineKeyboardButton("📊 Status").callbackData("status")
+                },
+                new InlineKeyboardButton[]{
+                        new InlineKeyboardButton("⚙️ Settings").callbackData("settings")
+                }
         );
 
-        bot.execute(new EditMessageText(chatId, messageId, text).parseMode(ParseMode.Markdown).replyMarkup(markup));
+        EditMessageText edit = new EditMessageText(chatId, messageId, text)
+                .parseMode(ParseMode.Markdown)
+                .replyMarkup(markup);
+        bot.execute(edit);
     }
 
     private void sendSettingsMenu(long chatId, int messageId) {
@@ -335,24 +357,79 @@ public class TelegramManager {
 
         InlineKeyboardMarkup markup = new InlineKeyboardMarkup(
                 new InlineKeyboardButton[]{ new InlineKeyboardButton("Toggle Wait (" + (wait ? "ON" : "OFF") + ")").callbackData("toggle_wait") },
-                new InlineKeyboardButton[]{ new InlineKeyboardButton("-1s").callbackData("delay_dec"), new InlineKeyboardButton("Delay: " + delay + "s").callbackData("noop"), new InlineKeyboardButton("+1s").callbackData("delay_inc") },
-                new InlineKeyboardButton[]{ new InlineKeyboardButton("-1s").callbackData("dur_dec"), new InlineKeyboardButton("Ignore: " + dur + "s").callbackData("noop"), new InlineKeyboardButton("+1s").callbackData("dur_inc") },
-                new InlineKeyboardButton[]{ new InlineKeyboardButton("-5").callbackData("thresh_1_dec"), new InlineKeyboardButton("Level 1: " + thresh[0]).callbackData("noop"), new InlineKeyboardButton("+5").callbackData("thresh_1_inc") },
-                new InlineKeyboardButton[]{ new InlineKeyboardButton("-5").callbackData("thresh_2_dec"), new InlineKeyboardButton("Level 2: " + thresh[1]).callbackData("noop"), new InlineKeyboardButton("+5").callbackData("thresh_2_inc") },
-                new InlineKeyboardButton[]{ new InlineKeyboardButton("-5").callbackData("thresh_3_dec"), new InlineKeyboardButton("Level 3: " + thresh[2]).callbackData("noop"), new InlineKeyboardButton("+5").callbackData("thresh_3_inc") },
-                new InlineKeyboardButton[]{ new InlineKeyboardButton("-5").callbackData("thresh_4_dec"), new InlineKeyboardButton("Level 4: " + thresh[3]).callbackData("noop"), new InlineKeyboardButton("+5").callbackData("thresh_4_inc") },
-                new InlineKeyboardButton[]{ new InlineKeyboardButton("-5").callbackData("thresh_5_dec"), new InlineKeyboardButton("Level 5: " + thresh[4]).callbackData("noop"), new InlineKeyboardButton("+5").callbackData("thresh_5_inc") },
-                new InlineKeyboardButton[]{ new InlineKeyboardButton("-0.05").callbackData("poi_thresh_dec"), new InlineKeyboardButton(String.format(java.util.Locale.US, "POI Threshold: %.2f", poiTh)).callbackData("noop"), new InlineKeyboardButton("+0.05").callbackData("poi_thresh_inc") },
-                new InlineKeyboardButton[]{ new InlineKeyboardButton("-0.05").callbackData("poni_thresh_dec"), new InlineKeyboardButton(String.format(java.util.Locale.US, "PONI Threshold: %.2f", poniTh)).callbackData("noop"), new InlineKeyboardButton("+0.05").callbackData("poni_thresh_inc") },
+                new InlineKeyboardButton[]{ 
+                    new InlineKeyboardButton("-1s").callbackData("delay_dec"),
+                    new InlineKeyboardButton("Delay: " + delay + "s").callbackData("noop"),
+                    new InlineKeyboardButton("+1s").callbackData("delay_inc")
+                },
+                new InlineKeyboardButton[]{ 
+                    new InlineKeyboardButton("-1s").callbackData("dur_dec"),
+                    new InlineKeyboardButton("Ignore: " + dur + "s").callbackData("noop"),
+                    new InlineKeyboardButton("+1s").callbackData("dur_inc")
+                },
+                new InlineKeyboardButton[]{
+                    new InlineKeyboardButton("-5").callbackData("thresh_1_dec"),
+                    new InlineKeyboardButton("Level 1: " + thresh[0]).callbackData("noop"),
+                    new InlineKeyboardButton("+5").callbackData("thresh_1_inc")
+                },
+                new InlineKeyboardButton[]{
+                    new InlineKeyboardButton("-5").callbackData("thresh_2_dec"),
+                    new InlineKeyboardButton("Level 2: " + thresh[1]).callbackData("noop"),
+                    new InlineKeyboardButton("+5").callbackData("thresh_2_inc")
+                },
+                new InlineKeyboardButton[]{
+                    new InlineKeyboardButton("-5").callbackData("thresh_3_dec"),
+                    new InlineKeyboardButton("Level 3: " + thresh[2]).callbackData("noop"),
+                    new InlineKeyboardButton("+5").callbackData("thresh_3_inc")
+                },
+                new InlineKeyboardButton[]{
+                    new InlineKeyboardButton("-5").callbackData("thresh_4_dec"),
+                    new InlineKeyboardButton("Level 4: " + thresh[3]).callbackData("noop"),
+                    new InlineKeyboardButton("+5").callbackData("thresh_4_inc")
+                },
+                new InlineKeyboardButton[]{
+                    new InlineKeyboardButton("-5").callbackData("thresh_5_dec"),
+                    new InlineKeyboardButton("Level 5: " + thresh[4]).callbackData("noop"),
+                    new InlineKeyboardButton("+5").callbackData("thresh_5_inc")
+                },
+                new InlineKeyboardButton[]{
+                    new InlineKeyboardButton("-0.05").callbackData("poi_thresh_dec"),
+                    new InlineKeyboardButton(String.format(java.util.Locale.US, "POI Threshold: %.2f", poiTh)).callbackData("noop"),
+                    new InlineKeyboardButton("+0.05").callbackData("poi_thresh_inc")
+                },
+                new InlineKeyboardButton[]{
+                    new InlineKeyboardButton("-0.05").callbackData("poni_thresh_dec"),
+                    new InlineKeyboardButton(String.format(java.util.Locale.US, "PONI Threshold: %.2f", poniTh)).callbackData("noop"),
+                    new InlineKeyboardButton("+0.05").callbackData("poni_thresh_inc")
+                },
                 new InlineKeyboardButton[]{ new InlineKeyboardButton("Repeat Reminder (" + (repeatRem ? "ON" : "OFF") + ")").callbackData("toggle_repeat_reminder") },
-                new InlineKeyboardButton[]{ new InlineKeyboardButton("-5s").callbackData("rem_min_dec"), new InlineKeyboardButton("Rem After Min: " + remMin + "s").callbackData("noop"), new InlineKeyboardButton("+5s").callbackData("rem_min_inc") },
-                new InlineKeyboardButton[]{ new InlineKeyboardButton("-5s").callbackData("rem_max_dec"), new InlineKeyboardButton("Rem After Max: " + remMax + "s").callbackData("noop"), new InlineKeyboardButton("+5s").callbackData("rem_max_inc") },
-                new InlineKeyboardButton[]{ new InlineKeyboardButton("-5s").callbackData("rep_min_dec"), new InlineKeyboardButton("Rep After Min: " + repMin + "s").callbackData("noop"), new InlineKeyboardButton("+5s").callbackData("rep_min_inc") },
-                new InlineKeyboardButton[]{ new InlineKeyboardButton("-5s").callbackData("rep_max_dec"), new InlineKeyboardButton("Rep After Max: " + repMax + "s").callbackData("noop"), new InlineKeyboardButton("+5s").callbackData("rep_max_inc") },
+                new InlineKeyboardButton[]{
+                    new InlineKeyboardButton("-5s").callbackData("rem_min_dec"),
+                    new InlineKeyboardButton("Rem After Min: " + remMin + "s").callbackData("noop"),
+                    new InlineKeyboardButton("+5s").callbackData("rem_min_inc")
+                },
+                new InlineKeyboardButton[]{
+                    new InlineKeyboardButton("-5s").callbackData("rem_max_dec"),
+                    new InlineKeyboardButton("Rem After Max: " + remMax + "s").callbackData("noop"),
+                    new InlineKeyboardButton("+5s").callbackData("rem_max_inc")
+                },
+                new InlineKeyboardButton[]{
+                    new InlineKeyboardButton("-5s").callbackData("rep_min_dec"),
+                    new InlineKeyboardButton("Rep After Min: " + repMin + "s").callbackData("noop"),
+                    new InlineKeyboardButton("+5s").callbackData("rep_min_inc")
+                },
+                new InlineKeyboardButton[]{
+                    new InlineKeyboardButton("-5s").callbackData("rep_max_dec"),
+                    new InlineKeyboardButton("Rep After Max: " + repMax + "s").callbackData("noop"),
+                    new InlineKeyboardButton("+5s").callbackData("rep_max_inc")
+                },
                 new InlineKeyboardButton[]{ new InlineKeyboardButton("🔙 Back").callbackData("back_main") }
         );
 
-        bot.execute(new EditMessageText(chatId, messageId, text).parseMode(ParseMode.Markdown).replyMarkup(markup));
+        EditMessageText edit = new EditMessageText(chatId, messageId, text)
+                .parseMode(ParseMode.Markdown)
+                .replyMarkup(markup);
+        bot.execute(edit);
     }
 
     private void editMessage(long chatId, int messageId, String text) {
@@ -372,10 +449,21 @@ public class TelegramManager {
             String caption = emoji + " " + (isPoni ? "PONI is talking" : (responseFileName != null ? responseFileName : "No file found"));
 
             for (Long chatId : allowedIds) {
-                SendAudio sendAudio = new SendAudio(chatId, file).caption(caption).title("Nurse VAD Recording");
+                SendAudio sendAudio = new SendAudio(chatId, file)
+                        .caption(caption)
+                        .title("Nurse VAD Recording");
+                
                 bot.execute(sendAudio, new Callback<SendAudio, SendResponse>() {
-                    @Override public void onResponse(SendAudio request, SendResponse response) {}
-                    @Override public void onFailure(SendAudio request, IOException e) {}
+                    @Override
+                    public void onResponse(SendAudio request, SendResponse response) {
+                        if (!response.isOk()) {
+                            Log.e("TelegramManager", "Failed to send audio: " + response.description());
+                        }
+                    }
+                    @Override
+                    public void onFailure(SendAudio request, IOException e) {
+                        Log.e("TelegramManager", "Network error sending audio", e);
+                    }
                 });
             }
         } catch (Exception e) {
@@ -388,8 +476,16 @@ public class TelegramManager {
         Set<Long> allowedIds = SettingsManager.getAllowedUserIds(appContext);
         for (Long chatId : allowedIds) {
             bot.execute(new SendMessage(chatId, text), new Callback<SendMessage, SendResponse>() {
-                @Override public void onResponse(SendMessage request, SendResponse response) {}
-                @Override public void onFailure(SendMessage request, IOException e) {}
+                @Override
+                public void onResponse(SendMessage request, SendResponse response) {
+                    if (!response.isOk()) {
+                        Log.e("TelegramManager", "Failed to send text: " + response.description());
+                    }
+                }
+                @Override
+                public void onFailure(SendMessage request, IOException e) {
+                    Log.e("TelegramManager", "Network error sending text", e);
+                }
             });
         }
     }
