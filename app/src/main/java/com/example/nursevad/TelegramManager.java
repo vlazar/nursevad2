@@ -2,6 +2,8 @@ package com.example.nursevad;
 
 import android.content.Context;
 import android.content.Intent;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 import com.pengrad.telegrambot.TelegramBot;
 import com.pengrad.telegrambot.UpdatesListener;
@@ -42,10 +44,10 @@ public class TelegramManager {
     public void start(Context context) {
         if (isRunning) return;
         appContext = context.getApplicationContext();
-        
+
         String token = SettingsManager.getBotToken(appContext);
         Set<Long> initialIds = SettingsManager.getAllowedUserIds(appContext);
-        
+
         if (token == null || token.isEmpty() || initialIds.isEmpty()) {
             Log.d("TelegramManager", "Bot not started: Missing token or user IDs.");
             return;
@@ -71,7 +73,7 @@ public class TelegramManager {
             }, e -> {
                 Log.e("TelegramManager", "Telegram Bot Error: " + e.getMessage());
             });
-            
+
         } catch (Throwable t) {
             Log.e("TelegramManager", "Fatal error starting Telegram Bot", t);
             isRunning = false;
@@ -95,7 +97,7 @@ public class TelegramManager {
     private void handleMessage(Message message) {
         Set<Long> allowedIds = SettingsManager.getAllowedUserIds(appContext);
         if (message.from() == null || !isAuthorized(message.from().id(), allowedIds)) return;
-        
+
         if (message.voice() != null) {
             String senderName = "Telegram Bot";
             if (message.from().firstName() != null) {
@@ -104,12 +106,16 @@ public class TelegramManager {
             } else if (message.from().username() != null) {
                 senderName = message.from().username();
             }
-            
+
+            // FIX ORDER: Send "🔵 Voice Message from <sender>" FIRST,
+            // before starting the download. The "⚠️ Failed..." message
+            // will only be sent later if all download retries are exhausted.
             broadcastMessage("🔵 Voice Message from " + senderName);
+
             downloadAndQueueVoice(message.voice().fileId(), senderName);
             return;
         }
-        
+
         sendMainMenu(message.chat().id(), message.messageId());
     }
 
@@ -132,22 +138,30 @@ public class TelegramManager {
     }
 
     private void downloadAndQueueVoice(String fileId, String senderName) {
+        downloadWithRetry(fileId, senderName, 0);
+    }
+
+    private void downloadWithRetry(String fileId, String senderName, int attempt) {
+        final int MAX_RETRIES = 3;
+
         bot.execute(new GetFile(fileId), new Callback<GetFile, GetFileResponse>() {
             @Override
             public void onResponse(GetFile request, GetFileResponse response) {
                 if (response.isOk()) {
                     String fileUrl = bot.getFullFilePath(response.file());
-                    
+
                     new Thread(() -> {
                         try {
                             URL url = new URL(fileUrl);
                             HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+                            connection.setConnectTimeout(15000);
+                            connection.setReadTimeout(15000);
                             connection.connect();
-                            
+
                             File tempFile = new File(appContext.getCacheDir(), "tg_voice_" + System.currentTimeMillis() + ".ogg");
                             FileOutputStream output = new FileOutputStream(tempFile);
                             InputStream input = connection.getInputStream();
-                            
+
                             byte[] data = new byte[4096];
                             int count;
                             while ((count = input.read(data)) != -1) {
@@ -156,31 +170,58 @@ public class TelegramManager {
                             output.close();
                             input.close();
                             connection.disconnect();
-                            
+
                             Intent i = new Intent(appContext, VadService.class);
                             i.setAction("PLAY_TELEGRAM_VOICE");
                             i.putExtra("PATH", tempFile.getAbsolutePath());
                             i.putExtra("SENDER", senderName);
                             appContext.startService(i);
-                            
+
                         } catch (Exception e) {
-                            Log.e("TelegramManager", "Failed to download voice", e);
+                            Log.e("TelegramManager", "Download attempt " + (attempt + 1) + " failed", e);
+                            handleDownloadRetry(fileId, senderName, attempt, MAX_RETRIES);
                         }
                     }).start();
+                } else {
+                    Log.e("TelegramManager", "GetFile returned error on attempt " + (attempt + 1));
+                    handleDownloadRetry(fileId, senderName, attempt, MAX_RETRIES);
                 }
             }
 
             @Override
             public void onFailure(GetFile request, IOException e) {
-                Log.e("TelegramManager", "Failed to get file info", e);
+                Log.e("TelegramManager", "GetFile network failure on attempt " + (attempt + 1), e);
+                handleDownloadRetry(fileId, senderName, attempt, MAX_RETRIES);
             }
         });
+    }
+
+    private void handleDownloadRetry(String fileId, String senderName, int attempt, int maxRetries) {
+        if (attempt < maxRetries - 1) {
+            long delay = (long) Math.pow(2, attempt) * 1000; // 1s, 2s, 4s
+            DebugLogger.log("Voice download retry " + (attempt + 2) + " in " + delay + "ms");
+            new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                downloadWithRetry(fileId, senderName, attempt + 1);
+            }, delay);
+        } else {
+            // All retries exhausted.
+            DebugLogger.log("All voice download attempts failed for sender: " + senderName);
+
+            // Add WARNING event to the events log (orange background in UI)
+            EventRepository.getInstance().addEvent(
+                new LogEvent(LogEvent.Type.WARNING, "Voice message download failed from " + senderName)
+            );
+
+            // Send "⚠️" message to Telegram AFTER the "🔵" message
+            // (which was already sent in handleMessage before the download started)
+            broadcastMessage("⚠️ Failed to download voice message from " + senderName);
+        }
     }
 
     private void handleCallback(CallbackQuery callback) {
         Set<Long> allowedIds = SettingsManager.getAllowedUserIds(appContext);
         if (callback.from() == null || !isAuthorized(callback.from().id(), allowedIds)) return;
-        
+
         long chatId = callback.message().chat().id();
         int messageId = callback.message().messageId();
         String data = callback.data();
@@ -233,10 +274,6 @@ public class TelegramManager {
             if (data.equals("poni_thresh_inc") && current < 95) SettingsManager.savePoniThreshold(appContext, current + 5);
             if (data.equals("poni_thresh_dec") && current > 55) SettingsManager.savePoniThreshold(appContext, current - 5);
             sendSettingsMenu(chatId, messageId);
-        } else if (data.equals("toggle_repeat_reminder")) {
-            boolean current = SettingsManager.getRepeatReminder(appContext);
-            SettingsManager.saveRepeatReminder(appContext, !current);
-            sendSettingsMenu(chatId, messageId);
         } else if (data.startsWith("rem_min_")) {
             int current = SettingsManager.getReminderSpeechMin(appContext);
             if (data.equals("rem_min_inc") && current < 180) SettingsManager.saveReminderSpeechMin(appContext, current + 5);
@@ -257,21 +294,25 @@ public class TelegramManager {
             if (data.equals("rep_max_inc") && current < 30) SettingsManager.saveRepeatReminderMax(appContext, current + 5);
             if (data.equals("rep_max_dec") && current > 5) SettingsManager.saveRepeatReminderMax(appContext, current - 5);
             sendSettingsMenu(chatId, messageId);
+        } else if (data.equals("toggle_repeat_reminder")) {
+            boolean current = SettingsManager.getRepeatReminder(appContext);
+            SettingsManager.saveRepeatReminder(appContext, !current);
+            sendSettingsMenu(chatId, messageId);
         }
-        
+
         bot.execute(new AnswerCallbackQuery(callback.id()));
     }
 
     private void handleThresholdCallback(String data) {
         String[] parts = data.split("_");
         if (parts.length < 3) return;
-        int level = Integer.parseInt(parts[1]) - 1; 
+        int level = Integer.parseInt(parts[1]) - 1;
         boolean inc = parts[2].equals("inc");
-        
+
         int[] thresholds = SettingsManager.getThresholds(appContext);
         if (inc && thresholds[level] < 100) thresholds[level] += 5;
         if (!inc && thresholds[level] > 0) thresholds[level] -= 5;
-        
+
         SettingsManager.saveThresholds(appContext, thresholds);
     }
 
@@ -280,7 +321,7 @@ public class TelegramManager {
         boolean silent = SettingsManager.isSilentMode(appContext);
         boolean useEmb = SettingsManager.getUseEmbeddings(appContext);
         String text = "*Nurse VAD Control Panel*\nState: " + state;
-        
+
         InlineKeyboardMarkup markup = new InlineKeyboardMarkup(
                 new InlineKeyboardButton[]{
                         new InlineKeyboardButton("▶ Start").callbackData("start_vad"),
@@ -310,7 +351,7 @@ public class TelegramManager {
         boolean silent = SettingsManager.isSilentMode(appContext);
         boolean useEmb = SettingsManager.getUseEmbeddings(appContext);
         String text = "*Nurse VAD Control Panel*\nState: " + state;
-        
+
         InlineKeyboardMarkup markup = new InlineKeyboardMarkup(
                 new InlineKeyboardButton[]{
                         new InlineKeyboardButton("▶ Start").callbackData("start_vad"),
@@ -357,12 +398,12 @@ public class TelegramManager {
 
         InlineKeyboardMarkup markup = new InlineKeyboardMarkup(
                 new InlineKeyboardButton[]{ new InlineKeyboardButton("Toggle Wait (" + (wait ? "ON" : "OFF") + ")").callbackData("toggle_wait") },
-                new InlineKeyboardButton[]{ 
+                new InlineKeyboardButton[]{
                     new InlineKeyboardButton("-1s").callbackData("delay_dec"),
                     new InlineKeyboardButton("Delay: " + delay + "s").callbackData("noop"),
                     new InlineKeyboardButton("+1s").callbackData("delay_inc")
                 },
-                new InlineKeyboardButton[]{ 
+                new InlineKeyboardButton[]{
                     new InlineKeyboardButton("-1s").callbackData("dur_dec"),
                     new InlineKeyboardButton("Ignore: " + dur + "s").callbackData("noop"),
                     new InlineKeyboardButton("+1s").callbackData("dur_inc")
@@ -452,7 +493,7 @@ public class TelegramManager {
                 SendAudio sendAudio = new SendAudio(chatId, file)
                         .caption(caption)
                         .title("Nurse VAD Recording");
-                
+
                 bot.execute(sendAudio, new Callback<SendAudio, SendResponse>() {
                     @Override
                     public void onResponse(SendAudio request, SendResponse response) {
