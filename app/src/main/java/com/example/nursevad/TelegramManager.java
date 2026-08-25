@@ -1,5 +1,7 @@
 package com.example.nursevad;
 
+import android.os.Handler;
+import android.os.Looper;
 import android.content.Context;
 import android.content.Intent;
 import android.util.Log;
@@ -132,22 +134,30 @@ public class TelegramManager {
     }
 
     private void downloadAndQueueVoice(String fileId, String senderName) {
+        downloadWithRetry(fileId, senderName, 0);
+    }
+
+    private void downloadWithRetry(String fileId, String senderName, int attempt) {
+        final int MAX_RETRIES = 3;
+
         bot.execute(new GetFile(fileId), new Callback<GetFile, GetFileResponse>() {
             @Override
             public void onResponse(GetFile request, GetFileResponse response) {
                 if (response.isOk()) {
                     String fileUrl = bot.getFullFilePath(response.file());
-                    
+
                     new Thread(() -> {
                         try {
                             URL url = new URL(fileUrl);
                             HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+                            connection.setConnectTimeout(15000);
+                            connection.setReadTimeout(15000);
                             connection.connect();
-                            
+
                             File tempFile = new File(appContext.getCacheDir(), "tg_voice_" + System.currentTimeMillis() + ".ogg");
                             FileOutputStream output = new FileOutputStream(tempFile);
                             InputStream input = connection.getInputStream();
-                            
+
                             byte[] data = new byte[4096];
                             int count;
                             while ((count = input.read(data)) != -1) {
@@ -156,25 +166,47 @@ public class TelegramManager {
                             output.close();
                             input.close();
                             connection.disconnect();
-                            
+
                             Intent i = new Intent(appContext, VadService.class);
                             i.setAction("PLAY_TELEGRAM_VOICE");
                             i.putExtra("PATH", tempFile.getAbsolutePath());
                             i.putExtra("SENDER", senderName);
                             appContext.startService(i);
-                            
+
                         } catch (Exception e) {
-                            Log.e("TelegramManager", "Failed to download voice", e);
+                            Log.e("TelegramManager", "Download attempt " + (attempt + 1) + " failed", e);
+                            handleDownloadRetry(fileId, senderName, attempt, MAX_RETRIES);
                         }
                     }).start();
+                } else {
+                    Log.e("TelegramManager", "GetFile returned error on attempt " + (attempt + 1));
+                    handleDownloadRetry(fileId, senderName, attempt, MAX_RETRIES);
                 }
             }
 
             @Override
             public void onFailure(GetFile request, IOException e) {
-                Log.e("TelegramManager", "Failed to get file info", e);
+                Log.e("TelegramManager", "GetFile network failure on attempt " + (attempt + 1), e);
+                handleDownloadRetry(fileId, senderName, attempt, MAX_RETRIES);
             }
         });
+    }
+
+    private void handleDownloadRetry(String fileId, String senderName, int attempt, int maxRetries) {
+        if (attempt < maxRetries - 1) {
+            long delay = (long) Math.pow(2, attempt) * 1000; // 1s, 2s, 4s
+            DebugLogger.log("Voice download retry " + (attempt + 2) + " in " + delay + "ms");
+            new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                downloadWithRetry(fileId, senderName, attempt + 1);
+            }, delay);
+        } else {
+            // All retries exhausted — log warning to events list and Telegram
+            DebugLogger.log("All voice download attempts failed for sender: " + senderName);
+            EventRepository.getInstance().addEvent(
+                new LogEvent(LogEvent.Type.WARNING, "Voice message download failed from " + senderName)
+            );
+            broadcastMessage("⚠️ Failed to download voice message from " + senderName);
+        }
     }
 
     private void handleCallback(CallbackQuery callback) {

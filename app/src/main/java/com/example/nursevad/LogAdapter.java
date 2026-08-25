@@ -151,6 +151,19 @@ public class LogAdapter extends ListAdapter<LogEvent, LogAdapter.ViewHolder> {
                 tvPlayed.setTextColor(Color.DKGRAY);
                 tvPlayed.setVisibility(View.VISIBLE);
 
+            } else if (event.type == LogEvent.Type.WARNING) {
+                itemView.setBackgroundColor(Color.parseColor("#FFF3E0"));
+                swatch.setBackgroundColor(Color.TRANSPARENT);
+                swatch.setImageResource(0);
+                swatch.setClickable(false);
+                tvTitle.setText(time + " - Warning");
+                tvTitle.setTextColor(Color.parseColor("#E65100"));
+                tvTitle.setTypeface(null, android.graphics.Typeface.BOLD);
+                tvPlayed.setText(event.displayName);
+                tvPlayed.setTextColor(Color.DKGRAY);
+                tvPlayed.setVisibility(View.VISIBLE);
+                btnPlay.setVisibility(View.INVISIBLE);
+
             } else if (event.type == LogEvent.Type.START) {
                 tvTitle.setText(time + " - Start");
                 tvTitle.setTextColor(Color.parseColor("#2E7D32"));
