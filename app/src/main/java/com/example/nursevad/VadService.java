@@ -388,10 +388,10 @@ public class VadService extends Service {
             handler.removeCallbacks(speechDelayRunnable);
             speechDelayRunnable = null;
         }
-        
+
         long durationMs = SystemClock.elapsedRealtime() - speechStartMs;
         int thresholdSec = SettingsManager.getDurationThreshold(this);
-        
+
         if (durationMs < thresholdSec * 1000) {
             if (isSpeaking) {
                 speechDelayRunnable = () -> triggerResponse();
@@ -404,91 +404,72 @@ public class VadService extends Service {
                     playNextTelegramVoice();
                 } else {
                     EventBus.getInstance().postStatus("Listening...");
-                    resumeReminderTimer();
+                    // NOTE: Do NOT call resumeReminderTimer() here.
+                    // A too-short event is neither POI nor PONI — leave timer untouched.
                 }
                 return;
             }
         }
-        
+
         double avgRms = accumulatedRms / frameCount;
         double safeAvgRms = Math.max(1.0, avgRms);
         double avgDb = 20 * Math.log10(safeAvgRms / 32768.0);
-        
+
         double normalizedAvgDb = (avgDb + 55.0) / 50.0;
         normalizedAvgDb = Math.max(0.0, Math.min(1.0, normalizedAvgDb));
         int avgPercent = (int) Math.round(normalizedAvgDb * 100.0);
         avgPercent = Math.max(0, Math.min(100, avgPercent));
-        
+
         int level = getLevel(avgPercent);
-        
+
         AudioFile file = pickFile(level);
         String recordedUri = (recordedFile != null) ? Uri.fromFile(recordedFile).toString() : null;
-        
+
         final AudioFile finalFile = file;
         final String finalRecordedUri = recordedUri;
         final int finalLevel = level;
-        final File finalRecordedFile = recordedFile;
-
-        DebugLogger.log("triggerResponse: level=" + level + ", file=" + (file != null ? file.displayName : "null") + 
-                ", recordedFile=" + (recordedFile != null ? recordedFile.getAbsolutePath() : "null"));
 
         Runnable finalizeEvent = () -> {
-            DebugLogger.log("finalizeEvent START. thread=" + Thread.currentThread().getName());
-            
             boolean isPoi = true;
             String embUri = SettingsManager.getEmbeddingsFolderUri(this);
             boolean useEmbeddings = SettingsManager.getUseEmbeddings(this);
-            if (useEmbeddings && embUri != null && finalRecordedFile != null && finalRecordedFile.exists()) {                DebugLogger.log("finalizeEvent: Running speaker verification...");
-                isPoi = SpeakerVerifier.getInstance(this).verify(finalRecordedFile);
-                DebugLogger.log("finalizeEvent: Verification result isPoi=" + isPoi);
-            } else {
-                DebugLogger.log("finalizeEvent: No embeddings folder or no recorded file. Skipping verification.");
+            if (useEmbeddings && embUri != null && recordedFile != null && recordedFile.exists()) {
+                isPoi = SpeakerVerifier.getInstance(this).verify(recordedFile);
             }
-            
+
             LogEvent event = new LogEvent(LogEvent.Type.SPEECH, finalLevel, finalFile, finalRecordedUri);
             event.isPoni = !isPoi;
             if (!isPoi) event.displayName = "PONI is talking";
-            
-            DebugLogger.log("finalizeEvent: Adding SPEECH event. isPoni=" + event.isPoni + 
-                    ", level=" + event.level + ", display=" + event.displayName);
-            
+
             EventRepository.getInstance().addEvent(event);
 
-            // Check if user responded to a pending repeat reminder
-            if (waitingForResponseAfterReminder) {
-                DebugLogger.log("User responded to reminder. Clearing repeat state.");
-                waitingForResponseAfterReminder = false;
-                userDidNotRespondToReminder = false;
-                repeatReminderIndex = 0;
-                if (responseCheckRunnable != null) {
-                    handler.removeCallbacks(responseCheckRunnable);
-                    responseCheckRunnable = null;
-                }
-                scheduleReminder();
-            }
-
-            // Clean up old WAV files to prevent memory/disk accumulation
-            cleanupOldWavFiles();            
-
-            if (finalRecordedFile != null && finalRecordedFile.exists()) {
+            if (recordedFile != null && recordedFile.exists()) {
                 String responseName = isPoi ? (finalFile != null ? finalFile.displayName : null) : "PONI is talking";
-                TelegramManager.getInstance().sendAudioEvent(Uri.fromFile(finalRecordedFile).toString(), finalLevel, responseName, !isPoi);
+                TelegramManager.getInstance().sendAudioEvent(Uri.fromFile(recordedFile).toString(), finalLevel, responseName, !isPoi);
             }
-            
+
             if (isPoi) {
-                DebugLogger.log("finalizeEvent: POI detected. Proceeding with normal response.");
+                // ─── POI: postpone reminder, cancel any pending repeat-response-check ───
+                if (SettingsManager.getReminderTrigger(this) == 1) {
+                    if (responseCheckRunnable != null) {
+                        handler.removeCallbacks(responseCheckRunnable);
+                        responseCheckRunnable = null;
+                        waitingForResponseAfterReminder = false;
+                        DebugLogger.log("POI event: cancelled pending response-check timer.");
+                    }
+                    resumeReminderTimer();
+                }
+
                 boolean playedSomething = false;
                 if (SettingsManager.getReminderTrigger(this) == 0) {
                     if (isReminderArmed) {
                         playReminder();
                         isReminderArmed = false;
-                        scheduleReminder(); 
+                        scheduleReminder();
                         playedSomething = true;
                     }
-                } else if (SettingsManager.getReminderTrigger(this) == 1) {
-                    resumeReminderTimer();
                 }
-                
+
                 if (!playedSomething && finalFile != null) {
                     if (SettingsManager.isSilentMode(this)) {
                         EventBus.getInstance().postStatus("Listening... (Silent)");
@@ -497,7 +478,7 @@ public class VadService extends Service {
                         playedSomething = true;
                     }
                 }
-                
+
                 if (!playedSomething) {
                     isPaused = false;
                     isProcessingResponse = false;
@@ -509,23 +490,22 @@ public class VadService extends Service {
                         } else {
                             EventBus.getInstance().postStatus("Listening...");
                         }
-                        resumeReminderTimer();
                     }
                 }
             } else {
-                DebugLogger.log("finalizeEvent: PONI detected. Skipping response audio. NOT resetting reminder timer.");
+                // ─── PONI: do NOT touch the reminder timer at all ───
+                // The reminder countdown continues unaffected.
+                // Only reset playback state so the mic resumes listening.
+                DebugLogger.log("finalizeEvent: PONI detected. Reminder timer left untouched.");
                 isPaused = false;
                 isProcessingResponse = false;
                 if (!telegramVoiceQueue.isEmpty()) {
                     playNextTelegramVoice();
                 } else {
                     EventBus.getInstance().postStatus("Listening...");
-                    // PONI: do NOT reset the timer, just resume with remaining time
-                    resumeReminderTimerWithRemaining();
+                    // NO resumeReminderTimer() here — PONI is invisible to reminders.
                 }
             }
-            
-            DebugLogger.log("finalizeEvent END.");
         };
 
         new Thread(finalizeEvent).start();
