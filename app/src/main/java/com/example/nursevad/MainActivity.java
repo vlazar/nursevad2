@@ -5,6 +5,8 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.content.res.ColorStateList;
+import android.graphics.Color;
 import android.os.Build;
 import android.os.Bundle;
 import android.view.Menu;
@@ -36,6 +38,9 @@ public class MainActivity extends AppCompatActivity {
     private SharedPreferences.OnSharedPreferenceChangeListener prefListener;
     private boolean isUpdatingSilentSwitch = false;
 
+    private static final String COLOR_START_GREEN = "#2E7D32";
+    private static final String COLOR_STOP_RED = "#C62828";
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -62,7 +67,7 @@ public class MainActivity extends AppCompatActivity {
         btnStartStop = findViewById(R.id.btnStartStop);
         ImageButton btnClear = findViewById(R.id.btnClear);
         recyclerView = findViewById(R.id.recyclerView);
-        
+
         switchSilent = findViewById(R.id.switchSilent);
         switchSilent.setChecked(SettingsManager.isSilentMode(this));
         switchSilent.setOnCheckedChangeListener((buttonView, isChecked) -> {
@@ -71,7 +76,7 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        // Listen for external changes to silent_mode (e.g., from Telegram bot)
+        // Listen for external silent mode changes (e.g., from Telegram bot)
         prefs = getSharedPreferences("NurseVadPrefs", Context.MODE_PRIVATE);
         prefListener = (sharedPreferences, key) -> {
             if ("silent_mode".equals(key) && !isUpdatingSilentSwitch) {
@@ -83,14 +88,11 @@ public class MainActivity extends AppCompatActivity {
             }
         };
 
-        if (isListening) {
-            btnStartStop.setText("Stop");
-        } else {
-            btnStartStop.setText("Start");
-        }
+        // Set initial button state
+        updateStartStopButton(isListening);
 
         recyclerView.setLayoutManager(new LinearLayoutManager(this));
-        
+
         adapter = new LogAdapter(new LogAdapter.OnPlayClickListener() {
             @Override
             public void onPlayClick(String uriString) {
@@ -118,19 +120,18 @@ public class MainActivity extends AppCompatActivity {
             Intent i = new Intent(this, VadService.class);
             if (!isListening) {
                 ContextCompat.startForegroundService(this, i);
-                btnStartStop.setText("Stop");
                 isListening = true;
             } else {
                 i.setAction("STOP");
                 startService(i);
-                btnStartStop.setText("Start");
                 isListening = false;
                 statusText.setText("Idle");
             }
+            updateStartStopButton(isListening);
         });
 
         btnClear.setOnClickListener(v -> EventRepository.getInstance().clearEvents());
-        
+
         EventBus.getInstance().getStatus().observe(this, status -> {
             statusText.setText(status);
             if (status != null && status.startsWith("ERR:")) {
@@ -139,15 +140,27 @@ public class MainActivity extends AppCompatActivity {
                 statusText.setTextColor(getResources().getColor(android.R.color.black));
             }
         });
-        
+
         EventBus.getInstance().getVolume().observe(this, vol -> volumeMeter.setProgress(vol));
         EventBus.getInstance().getDebug().observe(this, msg -> tvDebug.setText(msg));
         EventBus.getInstance().getPlayingUri().observe(this, uri -> adapter.setPlayingUri(uri));
-        
+
         EventBus.getInstance().getVadRunning().observe(this, isRunning -> {
             this.isListening = isRunning;
-            btnStartStop.setText(isRunning ? "Stop" : "Start");
+            updateStartStopButton(isRunning);
         });
+    }
+
+    private void updateStartStopButton(boolean running) {
+        if (running) {
+            btnStartStop.setText("Stop");
+            btnStartStop.setBackgroundTintList(ColorStateList.valueOf(Color.parseColor(COLOR_STOP_RED)));
+            btnStartStop.setTextColor(Color.WHITE);
+        } else {
+            btnStartStop.setText("Start");
+            btnStartStop.setBackgroundTintList(ColorStateList.valueOf(Color.parseColor(COLOR_START_GREEN)));
+            btnStartStop.setTextColor(Color.WHITE);
+        }
     }
 
     @Override
@@ -165,7 +178,7 @@ public class MainActivity extends AppCompatActivity {
     private void startTelegramServiceIfConfigured() {
         String token = SettingsManager.getBotToken(this);
         Set<Long> ids = SettingsManager.getAllowedUserIds(this);
-        
+
         Intent i = new Intent(this, TelegramService.class);
         if (token != null && !token.isEmpty() && !ids.isEmpty()) {
             ContextCompat.startForegroundService(this, i);

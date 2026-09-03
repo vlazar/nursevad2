@@ -27,11 +27,11 @@ public class SettingsActivity extends AppCompatActivity {
     private SeekBar sbDuration;
     private TextView tvDuration;
     private TextView tvFolderName;
-    
+
     private SeekBar sbDelay;
     private TextView tvDelay;
     private SwitchCompat switchWaitForEnd;
-    
+
     private TextInputEditText etBotToken;
     private TextInputEditText etUserIds;
 
@@ -46,9 +46,11 @@ public class SettingsActivity extends AppCompatActivity {
     private TextView tvRepeatRemMin, tvRepeatRemMax;
 
     private TextView tvEmbeddingsFolderName;
+    private SwitchCompat switchUseEmbeddings;
+    private TextView tvUseEmbeddings;
     private SeekBar sbPoiThreshold, sbPoniThreshold;
     private TextView tvPoiThreshold, tvPoniThreshold;
-    
+
     private String selectedFolderUri;
     private String selectedFolderName;
     private String selectedEmbeddingsUri;
@@ -56,7 +58,7 @@ public class SettingsActivity extends AppCompatActivity {
 
     private SharedPreferences prefs;
     private SharedPreferences.OnSharedPreferenceChangeListener prefListener;
-    private boolean isSaving = false; 
+    private boolean isSaving = false;
 
     private final ActivityResultLauncher<Uri> folderPickerLauncher = registerForActivityResult(
             new ActivityResultContracts.OpenDocumentTree(),
@@ -104,8 +106,7 @@ public class SettingsActivity extends AppCompatActivity {
         initReminder();
         initRepeatReminder();
         initFolderPicker();
-        initEmbeddingsFolder();
-        initUseEmbeddingsToggle();
+        initEmbeddingsSection();
         initEmbeddingThresholds();
         initTelegramSettings();
         initSaveButton();
@@ -133,13 +134,13 @@ public class SettingsActivity extends AppCompatActivity {
             sbThresholds[i].setMax(100);
             final int index = i;
             sbThresholds[i].setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-                @Override 
-                public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { 
+                @Override
+                public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
                     int snapped = Math.round(progress / 5.0f) * 5;
                     if (snapped > 100) snapped = 100;
                     if (snapped < 0) snapped = 0;
                     if (progress != snapped) { seekBar.setProgress(snapped); return; }
-                    tvThresholds[index].setText(snapped + "%"); 
+                    tvThresholds[index].setText(snapped + "%");
                 }
                 @Override public void onStartTrackingTouch(SeekBar seekBar) {}
                 @Override public void onStopTrackingTouch(SeekBar seekBar) {}
@@ -150,7 +151,7 @@ public class SettingsActivity extends AppCompatActivity {
     private void initDuration() {
         sbDuration = findViewById(R.id.sbDuration);
         tvDuration = findViewById(R.id.tvDuration);
-        sbDuration.setMax(9); 
+        sbDuration.setMax(9);
         sbDuration.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { tvDuration.setText("shorter than " + (progress + 1) + " seconds"); }
             @Override public void onStartTrackingTouch(SeekBar seekBar) {}
@@ -205,7 +206,6 @@ public class SettingsActivity extends AppCompatActivity {
             tvRepeatReminder.setText(isChecked ? "ON" : "OFF");
         });
 
-        // Range 5-30, step 5 → progress 0-5
         sbRepeatRemMin.setMax(5);
         sbRepeatRemMax.setMax(5);
 
@@ -243,13 +243,15 @@ public class SettingsActivity extends AppCompatActivity {
         btnSelectFolder.setOnClickListener(v -> folderPickerLauncher.launch(null));
     }
 
-    private void initEmbeddingsFolder() {
+    private void initEmbeddingsSection() {
         tvEmbeddingsFolderName = findViewById(R.id.tvEmbeddingsFolderName);
         findViewById(R.id.btnSelectEmbeddingsFolder).setOnClickListener(v -> embeddingsPickerLauncher.launch(null));
-    }
 
-    private void initUseEmbeddingsToggle() {
-        // Already handled in previous implementation - keep existing code
+        switchUseEmbeddings = findViewById(R.id.switchUseEmbeddings);
+        tvUseEmbeddings = findViewById(R.id.tvUseEmbeddings);
+        switchUseEmbeddings.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            tvUseEmbeddings.setText(isChecked ? "ON" : "OFF");
+        });
     }
 
     private void initEmbeddingThresholds() {
@@ -286,15 +288,15 @@ public class SettingsActivity extends AppCompatActivity {
         Button btnSave = findViewById(R.id.btnSave);
         btnSave.setOnClickListener(v -> {
             isSaving = true;
-            
+
             int[] thresholds = new int[5];
             for (int i = 0; i < 5; i++) thresholds[i] = sbThresholds[i].getProgress();
             SettingsManager.saveThresholds(this, thresholds);
-            
+
             SettingsManager.saveDurationThreshold(this, sbDuration.getProgress() + 1);
             SettingsManager.saveDelay(this, sbDelay.getProgress());
             SettingsManager.saveWaitForEnd(this, switchWaitForEnd.isChecked());
-            
+
             SettingsManager.saveReminderTrigger(this, rbStart.isChecked() ? 0 : 1);
             if (rbStart.isChecked()) {
                 SettingsManager.saveReminderStartMin(this, sbRemMin.getProgress() * 5 + 10);
@@ -311,19 +313,20 @@ public class SettingsActivity extends AppCompatActivity {
             if (selectedFolderUri != null) SettingsManager.saveFolder(this, selectedFolderUri, selectedFolderName);
             if (selectedEmbeddingsUri != null) SettingsManager.saveEmbeddingsFolder(this, selectedEmbeddingsUri, selectedEmbeddingsName);
 
-            SettingsManager.saveUseEmbeddings(this, true); // Keep existing toggle logic
+            // FIX: Save the actual toggle state instead of hardcoded true
+            SettingsManager.saveUseEmbeddings(this, switchUseEmbeddings.isChecked());
 
             int poiVal = 55 + sbPoiThreshold.getProgress() * 5;
             int poniVal = 55 + sbPoniThreshold.getProgress() * 5;
             SettingsManager.savePoiThreshold(this, poiVal);
             SettingsManager.savePoniThreshold(this, poniVal);
-            
+
             String token = etBotToken.getText() != null ? etBotToken.getText().toString().trim() : "";
             String idsStr = etUserIds.getText() != null ? etUserIds.getText().toString().trim() : "";
-            
+
             SettingsManager.saveBotToken(this, token);
             SettingsManager.saveAllowedUserIds(this, idsStr);
-            
+
             Intent tgIntent = new Intent(this, TelegramService.class);
             if (!token.isEmpty() && !idsStr.isEmpty()) {
                 ContextCompat.startForegroundService(this, tgIntent);
@@ -331,7 +334,7 @@ public class SettingsActivity extends AppCompatActivity {
                 tgIntent.setAction("STOP");
                 startService(tgIntent);
             }
-            
+
             isSaving = false;
             Toast.makeText(this, "Settings Saved", Toast.LENGTH_SHORT).show();
             finish();
@@ -356,7 +359,7 @@ public class SettingsActivity extends AppCompatActivity {
 
         int trigger = SettingsManager.getReminderTrigger(this);
         if (trigger == 0) rbStart.setChecked(true); else rbSpeech.setChecked(true);
-        
+
         if (rbStart.isChecked()) {
             sbRemMin.setProgress((SettingsManager.getReminderStartMin(this) - 10) / 5);
             sbRemMax.setProgress((SettingsManager.getReminderStartMax(this) - 10) / 5);
@@ -384,13 +387,18 @@ public class SettingsActivity extends AppCompatActivity {
         selectedEmbeddingsName = embFolderName;
         tvEmbeddingsFolderName.setText(embFolderName != null ? embFolderName : "No folder selected");
 
+        // FIX: Load and display the actual Use Embeddings state
+        boolean useEmb = SettingsManager.getUseEmbeddings(this);
+        switchUseEmbeddings.setChecked(useEmb);
+        tvUseEmbeddings.setText(useEmb ? "ON" : "OFF");
+
         int poiVal = SettingsManager.getPoiThreshold(this);
         int poniVal = SettingsManager.getPoniThreshold(this);
         sbPoiThreshold.setProgress((poiVal - 55) / 5);
         sbPoniThreshold.setProgress((poniVal - 55) / 5);
         tvPoiThreshold.setText(String.format(Locale.US, "POI: %.2f", poiVal / 100f));
         tvPoniThreshold.setText(String.format(Locale.US, "PONI: %.2f", poniVal / 100f));
-        
+
         if (!etBotToken.hasFocus()) etBotToken.setText(SettingsManager.getBotToken(this));
         if (!etUserIds.hasFocus()) {
             Set<Long> ids = SettingsManager.getAllowedUserIds(this);
