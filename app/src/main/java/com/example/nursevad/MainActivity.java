@@ -167,6 +167,11 @@ public class MainActivity extends AppCompatActivity {
     protected void onStart() {
         super.onStart();
         prefs.registerOnSharedPreferenceChangeListener(prefListener);
+        // Refresh the switch state in case it was changed while this activity was not visible
+        // (e.g., via Telegram bot while Settings screen was open)
+        isUpdatingSilentSwitch = true;
+        switchSilent.setChecked(SettingsManager.isSilentMode(this));
+        isUpdatingSilentSwitch = false;
     }
 
     @Override
