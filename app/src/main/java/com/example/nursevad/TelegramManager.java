@@ -3,7 +3,7 @@ package com.example.nursevad;
 import android.Manifest;
 import android.content.Context;
 import android.content.Intent;
-import android.content.pm.PackageManager;
+import android.content.pm.PackageManager;   // ← ADD THIS LINE
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
@@ -33,6 +33,8 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.Locale;
 import java.util.Set;
+import java.util.ArrayList;
+import java.util.List;
 
 public class TelegramManager {
     private static TelegramManager instance;
@@ -51,9 +53,10 @@ public class TelegramManager {
 
         String token = SettingsManager.getBotToken(appContext);
         Set<Long> initialIds = SettingsManager.getAllowedUserIds(appContext);
+        boolean hasGroup = SettingsManager.getGroupChatIdLong(appContext) != null;
 
-        if (token == null || token.isEmpty() || initialIds.isEmpty()) {
-            Log.d("TelegramManager", "Bot not started: Missing token or user IDs.");
+        if (token == null || token.isEmpty() || (initialIds.isEmpty() && !hasGroup)) {
+            Log.d("TelegramManager", "Bot not started: Missing token or no allowed users/group.");
             return;
         }
 
@@ -98,19 +101,59 @@ public class TelegramManager {
         return allowedIds.contains(userId);
     }
 
+    // ─── NEW: acceptance guard + outgoing targets ───
+    private boolean isIncomingAllowed(long chatId, long fromId) {
+        Long groupChatId = SettingsManager.getGroupChatIdLong(appContext);
+        Set<Long> allowedIds = SettingsManager.getAllowedUserIds(appContext);
+
+        if (groupChatId != null) {
+            // Group mode: only messages from the configured group chat
+            if (chatId != groupChatId.longValue()) return false;
+            // Inside the group: any user if no allow-list, else only listed users
+            return allowedIds.isEmpty() || allowedIds.contains(fromId);
+        }
+        // Direct mode: only listed users
+        return allowedIds.contains(fromId);
+    }
+
+    private List<Long> getBroadcastTargets() {
+        List<Long> targets = new ArrayList<>();
+        Long groupChatId = SettingsManager.getGroupChatIdLong(appContext);
+        if (groupChatId != null) {
+            targets.add(groupChatId);
+        } else {
+            targets.addAll(SettingsManager.getAllowedUserIds(appContext));
+        }
+        return targets;
+    }
+
+    private void sendToChat(long chatId, String text) {
+        bot.execute(new SendMessage(chatId, text), new Callback<SendMessage, SendResponse>() {
+            @Override
+            public void onResponse(SendMessage request, SendResponse response) {
+                if (!response.isOk()) {
+                    Log.e("TelegramManager", "Failed to send: " + response.description());
+                }
+            }
+            @Override
+            public void onFailure(SendMessage request, IOException e) {
+                Log.e("TelegramManager", "Network error sending", e);
+            }
+        });
+    }
+
     // Notify all users EXCEPT the one who performed the action
     private void notifyOtherUsers(long excludeUserId, String message) {
+        Long groupChatId = SettingsManager.getGroupChatIdLong(appContext);
+        if (groupChatId != null) {
+            // In group mode a single post reaches everyone in the group
+            sendToChat(groupChatId, message);
+            return;
+        }
         Set<Long> allowedIds = SettingsManager.getAllowedUserIds(appContext);
         for (Long chatId : allowedIds) {
             if (chatId != excludeUserId) {
-                bot.execute(new SendMessage(chatId, message), new Callback<SendMessage, SendResponse>() {
-                    @Override
-                    public void onResponse(SendMessage request, SendResponse response) {}
-                    @Override
-                    public void onFailure(SendMessage request, IOException e) {
-                        Log.e("TelegramManager", "Failed to notify user " + chatId, e);
-                    }
-                });
+                sendToChat(chatId, message);
             }
         }
     }
@@ -123,8 +166,8 @@ public class TelegramManager {
     }
 
     private void handleMessage(Message message) {
-        Set<Long> allowedIds = SettingsManager.getAllowedUserIds(appContext);
-        if (message.from() == null || !isAuthorized(message.from().id(), allowedIds)) return;
+        if (message.from() == null || message.chat() == null) return;
+        if (!isIncomingAllowed(message.chat().id(), message.from().id())) return;
 
         if (message.voice() != null) {
             String senderName = "Telegram Bot";
@@ -144,20 +187,8 @@ public class TelegramManager {
     }
 
     private void broadcastMessage(String text) {
-        Set<Long> allowedIds = SettingsManager.getAllowedUserIds(appContext);
-        for (Long chatId : allowedIds) {
-            bot.execute(new SendMessage(chatId, text), new Callback<SendMessage, SendResponse>() {
-                @Override
-                public void onResponse(SendMessage request, SendResponse response) {
-                    if (!response.isOk()) {
-                        Log.e("TelegramManager", "Failed to broadcast: " + response.description());
-                    }
-                }
-                @Override
-                public void onFailure(SendMessage request, IOException e) {
-                    Log.e("TelegramManager", "Network error broadcasting", e);
-                }
-            });
+        for (Long chatId : getBroadcastTargets()) {
+            sendToChat(chatId, text);
         }
     }
 
@@ -234,8 +265,8 @@ public class TelegramManager {
     }
 
     private void handleCallback(CallbackQuery callback) {
-        Set<Long> allowedIds = SettingsManager.getAllowedUserIds(appContext);
-        if (callback.from() == null || !isAuthorized(callback.from().id(), allowedIds)) return;
+        if (callback.from() == null || callback.message() == null || callback.message().chat() == null) return;
+        if (!isIncomingAllowed(callback.message().chat().id(), callback.from().id())) return;
 
         long chatId = callback.message().chat().id();
         int messageId = callback.message().messageId();
@@ -570,7 +601,7 @@ public class TelegramManager {
 
     public void sendAudioEvent(String wavUri, int level, String responseFileName, boolean isPoni) {
         if (!isRunning || bot == null) return;
-        Set<Long> allowedIds = SettingsManager.getAllowedUserIds(appContext);
+        Set<Long> allowedIds = new HashSet<>(getBroadcastTargets());
         if (allowedIds.isEmpty()) return;
 
         try {
@@ -605,20 +636,9 @@ public class TelegramManager {
 
     public void sendTextMessage(String text) {
         if (!isRunning || bot == null) return;
-        Set<Long> allowedIds = SettingsManager.getAllowedUserIds(appContext);
-        for (Long chatId : allowedIds) {
-            bot.execute(new SendMessage(chatId, text), new Callback<SendMessage, SendResponse>() {
-                @Override
-                public void onResponse(SendMessage request, SendResponse response) {
-                    if (!response.isOk()) {
-                        Log.e("TelegramManager", "Failed to send text: " + response.description());
-                    }
-                }
-                @Override
-                public void onFailure(SendMessage request, IOException e) {
-                    Log.e("TelegramManager", "Network error sending text", e);
-                }
-            });
+        Set<Long> allowedIds = new HashSet<>(getBroadcastTargets());
+        for (Long chatId : getBroadcastTargets()) {
+            sendToChat(chatId, text);   // or keep the inline callback version
         }
     }
 }

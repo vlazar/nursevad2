@@ -193,9 +193,10 @@ public class MainActivity extends AppCompatActivity {
     private void startTelegramServiceIfConfigured() {
         String token = SettingsManager.getBotToken(this);
         Set<Long> ids = SettingsManager.getAllowedUserIds(this);
+        boolean hasGroup = SettingsManager.getGroupChatIdLong(this) != null;
 
         Intent i = new Intent(this, TelegramService.class);
-        if (token != null && !token.isEmpty() && !ids.isEmpty()) {
+        if (token != null && !token.isEmpty() && (!ids.isEmpty() || hasGroup)) {
             ContextCompat.startForegroundService(this, i);
         } else {
             i.setAction("STOP");

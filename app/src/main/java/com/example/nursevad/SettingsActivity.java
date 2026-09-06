@@ -33,6 +33,7 @@ public class SettingsActivity extends AppCompatActivity {
     private SwitchCompat switchWaitForEnd;
 
     private TextInputEditText etBotToken;
+    private TextInputEditText etGroupChatId;
     private TextInputEditText etUserIds;
 
     private RadioGroup rgTrigger;
@@ -281,6 +282,7 @@ public class SettingsActivity extends AppCompatActivity {
 
     private void initTelegramSettings() {
         etBotToken = findViewById(R.id.etBotToken);
+        etGroupChatId = findViewById(R.id.etGroupChatId);
         etUserIds = findViewById(R.id.etUserIds);
     }
 
@@ -322,13 +324,16 @@ public class SettingsActivity extends AppCompatActivity {
             SettingsManager.savePoniThreshold(this, poniVal);
 
             String token = etBotToken.getText() != null ? etBotToken.getText().toString().trim() : "";
+            String groupStr = etGroupChatId.getText() != null ? etGroupChatId.getText().toString().trim() : "";
             String idsStr = etUserIds.getText() != null ? etUserIds.getText().toString().trim() : "";
 
             SettingsManager.saveBotToken(this, token);
+            SettingsManager.saveGroupChatId(this, groupStr);
             SettingsManager.saveAllowedUserIds(this, idsStr);
 
             Intent tgIntent = new Intent(this, TelegramService.class);
-            if (!token.isEmpty() && !idsStr.isEmpty()) {
+            // Bot runs if a token exists AND at least one acceptance source is configured
+            if (!token.isEmpty() && (!idsStr.isEmpty() || !groupStr.isEmpty())) {
                 ContextCompat.startForegroundService(this, tgIntent);
             } else {
                 tgIntent.setAction("STOP");
@@ -400,6 +405,7 @@ public class SettingsActivity extends AppCompatActivity {
         tvPoniThreshold.setText(String.format(Locale.US, "PONI: %.2f", poniVal / 100f));
 
         if (!etBotToken.hasFocus()) etBotToken.setText(SettingsManager.getBotToken(this));
+        if (!etGroupChatId.hasFocus()) etGroupChatId.setText(SettingsManager.getGroupChatId(this));
         if (!etUserIds.hasFocus()) {
             Set<Long> ids = SettingsManager.getAllowedUserIds(this);
             StringBuilder sb = new StringBuilder();

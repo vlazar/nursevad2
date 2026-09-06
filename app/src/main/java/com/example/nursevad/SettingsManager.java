@@ -15,6 +15,7 @@ public class SettingsManager {
     private static final String KEY_DELAY = "delay_response";
     private static final String KEY_WAIT_FOR_END = "wait_for_end";
     private static final String KEY_BOT_TOKEN = "bot_token";
+    private static final String KEY_GROUP_CHAT_ID = "group_chat_id";
     private static final String KEY_USER_IDS = "user_ids";
     private static final String KEY_EMBEDDINGS_URI = "embeddings_uri";
     private static final String KEY_EMBEDDINGS_NAME = "embeddings_name";
@@ -35,7 +36,6 @@ public class SettingsManager {
         return prefs;
     }
 
-    // --- Thresholds ---
     public static int[] getThresholds(Context context) {
         SharedPreferences p = getPrefs(context);
         int[] defaults = {20, 40, 60, 80, 100};
@@ -49,28 +49,32 @@ public class SettingsManager {
         editor.commit();
     }
 
-    // --- Duration ---
     public static int getDurationThreshold(Context context) { return getPrefs(context).getInt(KEY_DURATION, 1); }
     public static void saveDurationThreshold(Context context, int duration) { getPrefs(context).edit().putInt(KEY_DURATION, duration).commit(); }
 
-    // --- Audio Folder ---
     public static String getFolderUri(Context context) { return getPrefs(context).getString(KEY_FOLDER_URI, null); }
     public static String getFolderName(Context context) { return getPrefs(context).getString(KEY_FOLDER_NAME, null); }
     public static void saveFolder(Context context, String uri, String name) {
         getPrefs(context).edit().putString(KEY_FOLDER_URI, uri).putString(KEY_FOLDER_NAME, name).commit();
     }
 
-    // --- Delay ---
     public static int getDelay(Context context) { return getPrefs(context).getInt(KEY_DELAY, 0); }
     public static void saveDelay(Context context, int delay) { getPrefs(context).edit().putInt(KEY_DELAY, delay).commit(); }
 
-    // --- Wait For End ---
     public static boolean getWaitForEnd(Context context) { return getPrefs(context).getBoolean(KEY_WAIT_FOR_END, true); }
     public static void saveWaitForEnd(Context context, boolean wait) { getPrefs(context).edit().putBoolean(KEY_WAIT_FOR_END, wait).commit(); }
 
-    // --- Telegram Bot ---
     public static String getBotToken(Context context) { return getPrefs(context).getString(KEY_BOT_TOKEN, ""); }
     public static void saveBotToken(Context context, String token) { getPrefs(context).edit().putString(KEY_BOT_TOKEN, token).commit(); }
+
+    // NEW: Group Chat ID (stored the same secure way as the Bot API Token)
+    public static String getGroupChatId(Context context) { return getPrefs(context).getString(KEY_GROUP_CHAT_ID, ""); }
+    public static void saveGroupChatId(Context context, String id) { getPrefs(context).edit().putString(KEY_GROUP_CHAT_ID, id).commit(); }
+    public static Long getGroupChatIdLong(Context context) {
+        String s = getPrefs(context).getString(KEY_GROUP_CHAT_ID, "").trim();
+        if (s.isEmpty()) return null;
+        try { return Long.parseLong(s); } catch (NumberFormatException e) { return null; }
+    }
 
     public static Set<Long> getAllowedUserIds(Context context) {
         String idsStr = getPrefs(context).getString(KEY_USER_IDS, "");
@@ -86,24 +90,20 @@ public class SettingsManager {
         getPrefs(context).edit().putString(KEY_USER_IDS, idsString).commit();
     }
 
-    // --- Embeddings Folder ---
     public static String getEmbeddingsFolderUri(Context context) { return getPrefs(context).getString(KEY_EMBEDDINGS_URI, null); }
     public static String getEmbeddingsFolderName(Context context) { return getPrefs(context).getString(KEY_EMBEDDINGS_NAME, null); }
     public static void saveEmbeddingsFolder(Context context, String uri, String name) {
         getPrefs(context).edit().putString(KEY_EMBEDDINGS_URI, uri).putString(KEY_EMBEDDINGS_NAME, name).commit();
     }
 
-    // --- Use Embeddings Toggle ---
     public static boolean getUseEmbeddings(Context context) { return getPrefs(context).getBoolean(KEY_USE_EMBEDDINGS, true); }
     public static void saveUseEmbeddings(Context context, boolean use) { getPrefs(context).edit().putBoolean(KEY_USE_EMBEDDINGS, use).commit(); }
 
-    // --- POI/PONI Thresholds (stored as int hundredths: 75 = 0.75) ---
     public static int getPoiThreshold(Context context) { return getPrefs(context).getInt(KEY_POI_THRESHOLD, 75); }
     public static void savePoiThreshold(Context context, int val) { getPrefs(context).edit().putInt(KEY_POI_THRESHOLD, val).commit(); }
     public static int getPoniThreshold(Context context) { return getPrefs(context).getInt(KEY_PONI_THRESHOLD, 75); }
     public static void savePoniThreshold(Context context, int val) { getPrefs(context).edit().putInt(KEY_PONI_THRESHOLD, val).commit(); }
 
-    // --- Repeat Reminder ---
     public static boolean getRepeatReminder(Context context) { return getPrefs(context).getBoolean(KEY_REPEAT_REMINDER, true); }
     public static void saveRepeatReminder(Context context, boolean val) { getPrefs(context).edit().putBoolean(KEY_REPEAT_REMINDER, val).commit(); }
     public static int getRepeatReminderMin(Context context) { return getPrefs(context).getInt(KEY_REPEAT_REMINDER_MIN, 10); }
@@ -111,11 +111,9 @@ public class SettingsManager {
     public static int getRepeatReminderMax(Context context) { return getPrefs(context).getInt(KEY_REPEAT_REMINDER_MAX, 10); }
     public static void saveRepeatReminderMax(Context context, int val) { getPrefs(context).edit().putInt(KEY_REPEAT_REMINDER_MAX, val).commit(); }
 
-    // --- Silent Mode ---
     public static boolean isSilentMode(Context context) { return getPrefs(context).getBoolean(KEY_SILENT_MODE, false); }
     public static void saveSilentMode(Context context, boolean silent) { getPrefs(context).edit().putBoolean(KEY_SILENT_MODE, silent).commit(); }
 
-    // --- Reminder Trigger ---
     public static int getReminderTrigger(Context context) { return getPrefs(context).getInt("reminder_trigger", 0); }
     public static void saveReminderTrigger(Context context, int trigger) { getPrefs(context).edit().putInt("reminder_trigger", trigger).commit(); }
     public static int getReminderStartMin(Context context) { return getPrefs(context).getInt("rem_start_min", 90); }
