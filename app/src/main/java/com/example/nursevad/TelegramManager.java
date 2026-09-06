@@ -1,5 +1,7 @@
 package com.example.nursevad;
 
+import android.Manifest;
+import androidx.core.content.ContextCompat;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Handler;
@@ -241,10 +243,17 @@ public class TelegramManager {
         String userName = getUserName(callback);
 
         if (data.equals("start_vad")) {
-            VadService.startService(appContext);
-            editMessage(chatId, messageId, "🟩 Start\n🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩");
-            notifyOtherUsers(userId, userName + " hit Start");
-
+            // FIX: Don't attempt a background mic FGS start without the runtime
+            // permission — it throws SecurityException and leaves a stale ERR status.
+            if (ContextCompat.checkSelfPermission(appContext, Manifest.permission.RECORD_AUDIO)
+                    != PackageManager.PERMISSION_GRANTED) {
+                editMessage(chatId, messageId,
+                        "⚠️ Microphone permission is not granted. Open the app once and allow it, then try again.");
+            } else {
+                VadService.startService(appContext);
+                editMessage(chatId, messageId, "🟩 Start\n🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩");
+                notifyOtherUsers(userId, userName + " hit Start");
+            }
         } else if (data.equals("stop_vad")) {
             VadService.stopService(appContext);
             editMessage(chatId, messageId, "🟥 Stop\n🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥");

@@ -111,6 +111,15 @@ public class VadService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        // FIX: Null intent means Android resurrected the service after a process
+        // death (e.g. OOM crash). Do NOT resume listening without explicit user
+        // action — this kills the "zombie" reminders-after-close behavior.
+        if (intent == null) {
+            DebugLogger.log("Null intent (system restart). Stopping instead of auto-resuming.");
+            stopSelf();
+            return START_NOT_STICKY;
+        }
+
         String action = (intent != null && intent.getAction() != null) ? intent.getAction() : "null";
         DebugLogger.log("onStartCommand called. isRunning=" + isRunning + ", action=" + action);
 

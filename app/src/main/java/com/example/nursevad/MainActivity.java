@@ -175,6 +175,16 @@ public class MainActivity extends AppCompatActivity {
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this,
+                    new String[]{Manifest.permission.RECORD_AUDIO}, 101);
+        }
+    }
+
+    @Override
     protected void onStop() {
         super.onStop();
         prefs.unregisterOnSharedPreferenceChangeListener(prefListener);
