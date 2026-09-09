@@ -437,6 +437,7 @@ public class VadService extends Service {
         final AudioFile finalFile = file;
         final String finalRecordedUri = recordedUri;
         final int finalLevel = level;
+        final File finalRecordedFile = recordedFile;
 
         Runnable finalizeEvent = () -> {
             boolean isPoi = true;
