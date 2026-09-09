@@ -30,9 +30,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.Set;
 
 public class TelegramManager {
@@ -116,7 +114,7 @@ public class TelegramManager {
     }
 
     private List<Long> getBroadcastTargets() {
-        List<Long> targets = new ArrayList<>();
+        List<Long> targets = new java.util.ArrayList<>();
         Long groupChatId = SettingsManager.getGroupChatIdLong(appContext);
         if (groupChatId != null) {
             targets.add(groupChatId);
@@ -161,28 +159,27 @@ public class TelegramManager {
         }
     }
 
-    // ─── Start / Stop shared by commands and menu buttons ───
+    // ─── Start / Stop with optimistic state ───
 
-    private void startListening(long chatId, long userId, String userName, boolean confirm) {
+    private boolean tryStartListening() {
         if (ContextCompat.checkSelfPermission(appContext, Manifest.permission.RECORD_AUDIO)
                 != PackageManager.PERMISSION_GRANTED) {
-            if (confirm) {
-                sendToChat(chatId, "⚠️ Microphone permission is not granted. Open the app once and allow it, then try again.");
-            }
-            return;
+            return false;
         }
         VadService.startService(appContext);
-        notifyOtherUsers(userId, userName + " hit Start");
-        if (confirm) sendToChat(chatId, "🟢 Listening started");
+        VadService.isVadListening = true; // optimistic UI state until service confirms
+        return true;
     }
 
-    private void stopListening(long chatId, long userId, String userName, boolean confirm) {
+    private void stopListeningNow() {
         VadService.stopService(appContext);
-        notifyOtherUsers(userId, userName + " hit Stop");
-        if (confirm) sendToChat(chatId, "⚪ Listening stopped");
+        VadService.isVadListening = false; // optimistic UI state until service confirms
     }
 
-    // ─── Incoming messages: only /control, /start, /stop and voice notes ───
+    private static final String MIC_WARNING =
+            "⚠️ Microphone permission is not granted. Open the app once and allow it, then try again.";
+
+    // ─── Incoming messages ───
 
     private void handleMessage(Message message) {
         if (message.from() == null || message.chat() == null) return;
@@ -190,7 +187,6 @@ public class TelegramManager {
         long userId = message.from().id();
         if (!isIncomingAllowed(chatId, userId)) return;
 
-        // Voice messages keep their existing behavior
         if (message.voice() != null) {
             String senderName = "Telegram Bot";
             if (message.from().firstName() != null) {
@@ -199,21 +195,29 @@ public class TelegramManager {
             } else if (message.from().username() != null) {
                 senderName = message.from().username();
             }
-            broadcastMessage("🔵 Voice Message from " + senderName);
+            broadcastMessage("🎤 Voice Message from " + senderName);
             downloadAndQueueVoice(message.voice().fileId(), senderName);
             return;
         }
 
         String text = message.text();
-        if (text == null) return; // ignore captions, stickers, etc.
+        if (text == null) return;
         String cmd = text.trim();
+        String userName = getUserName(message.from());
 
         if (cmd.equals("/control") || cmd.startsWith("/control@")) {
             sendMainMenu(chatId, message.messageId());
         } else if (cmd.equals("/start") || cmd.startsWith("/start@")) {
-            startListening(chatId, userId, getUserName(message.from()), true);
+            if (!tryStartListening()) {
+                sendToChat(chatId, MIC_WARNING);
+            } else {
+                sendToChat(chatId, "🟢 Listening started");
+            }
+            notifyOtherUsers(userId, userName + " hit Start");
         } else if (cmd.equals("/stop") || cmd.startsWith("/stop@")) {
-            stopListening(chatId, userId, getUserName(message.from()), true);
+            stopListeningNow();
+            sendToChat(chatId, "⚪ Listening stopped");
+            notifyOtherUsers(userId, userName + " hit Stop");
         }
         // Any other message is ignored
     }
@@ -231,11 +235,14 @@ public class TelegramManager {
         String userName = getUserName(callback.from());
 
         if (data.equals("start_vad")) {
-            startListening(chatId, userId, userName, false);
-            editMainMenu(chatId, messageId);
+            boolean ok = tryStartListening();
+            if (!ok) sendToChat(chatId, MIC_WARNING);
+            notifyOtherUsers(userId, userName + " hit Start");
+            editMainMenuWithState(chatId, messageId, ok);
         } else if (data.equals("stop_vad")) {
-            stopListening(chatId, userId, userName, false);
-            editMainMenu(chatId, messageId);
+            stopListeningNow();
+            notifyOtherUsers(userId, userName + " hit Stop");
+            editMainMenuWithState(chatId, messageId, false);
         } else if (data.equals("toggle_silent")) {
             boolean current = SettingsManager.isSilentMode(appContext);
             SettingsManager.saveSilentMode(appContext, !current);
@@ -305,8 +312,8 @@ public class TelegramManager {
             if (newValue != current) {
                 SettingsManager.savePoiThreshold(appContext, newValue);
                 notifyOtherUsers(userId, userName + " changed POI Threshold from " +
-                        String.format(Locale.US, "%.2f", current / 100f) + " to " +
-                        String.format(Locale.US, "%.2f", newValue / 100f));
+                        String.format(java.util.Locale.US, "%.2f", current / 100f) + " to " +
+                        String.format(java.util.Locale.US, "%.2f", newValue / 100f));
             }
             sendSettingsMenu(chatId, messageId);
         } else if (data.startsWith("poni_thresh_")) {
@@ -317,8 +324,8 @@ public class TelegramManager {
             if (newValue != current) {
                 SettingsManager.savePoniThreshold(appContext, newValue);
                 notifyOtherUsers(userId, userName + " changed PONI Threshold from " +
-                        String.format(Locale.US, "%.2f", current / 100f) + " to " +
-                        String.format(Locale.US, "%.2f", newValue / 100f));
+                        String.format(java.util.Locale.US, "%.2f", current / 100f) + " to " +
+                        String.format(java.util.Locale.US, "%.2f", newValue / 100f));
             }
             sendSettingsMenu(chatId, messageId);
         } else if (data.startsWith("rem_min_")) {
@@ -362,7 +369,6 @@ public class TelegramManager {
             }
             sendSettingsMenu(chatId, messageId);
         }
-        // "status" callback removed
 
         bot.execute(new AnswerCallbackQuery(callback.id()));
     }
@@ -370,12 +376,10 @@ public class TelegramManager {
     // ─── Main menu ───
 
     private String mainMenuText() {
-        String state = VadService.isVadListening ? "🟢 Listening..." : "⚪ Idle";
-        return "Nurse VAD Control Panel\nState: " + state;
+        return "Nurse VAD Control Panel";
     }
 
-    private InlineKeyboardMarkup buildMainMenuMarkup() {
-        boolean listening = VadService.isVadListening;
+    private InlineKeyboardMarkup buildMainMenuMarkup(boolean listening) {
         boolean silent = SettingsManager.isSilentMode(appContext);
         return new InlineKeyboardMarkup(
                 new InlineKeyboardButton[]{
@@ -392,14 +396,19 @@ public class TelegramManager {
     }
 
     private void sendMainMenu(long chatId, int replyToId) {
-        SendMessage msg = new SendMessage(chatId, mainMenuText()).replyMarkup(buildMainMenuMarkup());
+        SendMessage msg = new SendMessage(chatId, mainMenuText())
+                .replyMarkup(buildMainMenuMarkup(VadService.isVadListening));
         if (replyToId > 0) msg.replyToMessageId(replyToId);
         bot.execute(msg);
     }
 
     private void editMainMenu(long chatId, int messageId) {
+        editMainMenuWithState(chatId, messageId, VadService.isVadListening);
+    }
+
+    private void editMainMenuWithState(long chatId, int messageId, boolean listening) {
         EditMessageText edit = new EditMessageText(chatId, messageId, mainMenuText())
-                .replyMarkup(buildMainMenuMarkup());
+                .replyMarkup(buildMainMenuMarkup(listening));
         bot.execute(edit);
     }
 
@@ -461,12 +470,12 @@ public class TelegramManager {
                 new InlineKeyboardButton[]{ new InlineKeyboardButton("Use Embeddings (" + (useEmb ? "ON" : "OFF") + ")").callbackData("toggle_use_embeddings") },
                 new InlineKeyboardButton[]{
                     new InlineKeyboardButton("-0.05").callbackData("poi_thresh_dec"),
-                    new InlineKeyboardButton(String.format(Locale.US, "POI Threshold: %.2f", poiTh)).callbackData("noop"),
+                    new InlineKeyboardButton(String.format(java.util.Locale.US, "POI Threshold: %.2f", poiTh)).callbackData("noop"),
                     new InlineKeyboardButton("+0.05").callbackData("poi_thresh_inc")
                 },
                 new InlineKeyboardButton[]{
                     new InlineKeyboardButton("-0.05").callbackData("poni_thresh_dec"),
-                    new InlineKeyboardButton(String.format(Locale.US, "PONI Threshold: %.2f", poniTh)).callbackData("noop"),
+                    new InlineKeyboardButton(String.format(java.util.Locale.US, "PONI Threshold: %.2f", poniTh)).callbackData("noop"),
                     new InlineKeyboardButton("+0.05").callbackData("poni_thresh_inc")
                 },
                 new InlineKeyboardButton[]{ new InlineKeyboardButton("Repeat Reminder (" + (repeatRem ? "ON" : "OFF") + ")").callbackData("toggle_repeat_reminder") },
@@ -582,13 +591,31 @@ public class TelegramManager {
             File file = new File(wavUri.replace("file://", ""));
             if (!file.exists()) return;
 
-            String emoji = isPoni ? "⚪️" : (level == 3 ? "🌕" : level == 4 ? "🟠" : level == 5 ? "🔴" : "🟢");
-            String caption = emoji + " " + (isPoni ? "PONI is talking" : (responseFileName != null ? responseFileName : "No file found"));
+            String emoji;
+            if (isPoni) {
+                emoji = "⚪️";
+            } else {
+                switch (level) {
+                    case 1:  emoji = "🔵"; break;
+                    case 2:  emoji = "🟢"; break;
+                    case 3:  emoji = "🟡"; break;
+                    case 4:  emoji = "🟠"; break;
+                    case 5:  emoji = "🔴"; break;
+                    default: emoji = "⚪️"; break;
+                }
+            }
+
+            // Always show the response file name (or fallback); never "PONI is talking"
+            String caption = emoji + " " + (responseFileName != null ? responseFileName : "No file found");
+
+            boolean useEmb = SettingsManager.getUseEmbeddings(appContext);
+            String performer = (useEmb && !isPoni) ? "Client" : "Someone";
 
             for (Long chatId : targets) {
                 SendAudio sendAudio = new SendAudio(chatId, file)
                         .caption(caption)
-                        .title("Nurse VAD Recording");
+                        .title("Speech Detected")
+                        .performer(performer);
 
                 bot.execute(sendAudio, new Callback<SendAudio, SendResponse>() {
                     @Override

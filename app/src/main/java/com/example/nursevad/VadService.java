@@ -448,13 +448,12 @@ public class VadService extends Service {
 
             LogEvent event = new LogEvent(LogEvent.Type.SPEECH, finalLevel, finalFile, finalRecordedUri);
             event.isPoni = !isPoi;
-            if (!isPoi) event.displayName = "PONI is talking";
 
             EventRepository.getInstance().addEvent(event);
 
-            if (recordedFile != null && recordedFile.exists()) {
-                String responseName = isPoi ? (finalFile != null ? finalFile.displayName : null) : "PONI is talking";
-                TelegramManager.getInstance().sendAudioEvent(Uri.fromFile(recordedFile).toString(), finalLevel, responseName, !isPoi);
+            if (finalRecordedFile != null && finalRecordedFile.exists()) {
+                String responseName = (finalFile != null) ? finalFile.displayName : null;
+                TelegramManager.getInstance().sendAudioEvent(Uri.fromFile(finalRecordedFile).toString(), finalLevel, responseName, !isPoi);
             }
 
             if (isPoi) {
@@ -637,7 +636,7 @@ public class VadService extends Service {
         }
         
         EventRepository.getInstance().addEvent(new LogEvent(LogEvent.Type.INTRO, file));
-        TelegramManager.getInstance().sendTextMessage("🔵 Intro " + file.displayName);
+        TelegramManager.getInstance().sendTextMessage("🔊 Intro " + file.displayName);
         
         // Silent mode: log and notify, but skip audio playback and move to next intro file
         if (SettingsManager.isSilentMode(this)) {
@@ -758,7 +757,7 @@ public class VadService extends Service {
         DebugLogger.log("playReminder: " + file.displayName);
         
         EventRepository.getInstance().addEvent(new LogEvent(LogEvent.Type.REMINDER, file));
-        TelegramManager.getInstance().sendTextMessage("🔵 Reminder " + file.displayName);
+        TelegramManager.getInstance().sendTextMessage("🔊 Reminder " + file.displayName);
         
         isPaused = true;
         isProcessingResponse = true;
@@ -827,7 +826,7 @@ public class VadService extends Service {
         DebugLogger.log("playRepeatReminder: " + fileToPlay.displayName + " (index=" + repeatReminderIndex + ")");
 
         EventRepository.getInstance().addEvent(new LogEvent(LogEvent.Type.REMINDER, fileToPlay));
-        TelegramManager.getInstance().sendTextMessage("🔵 Reminder " + fileToPlay.displayName);
+        TelegramManager.getInstance().sendTextMessage("🔊 Reminder " + fileToPlay.displayName);
 
         isPaused = true;
         isProcessingResponse = true;
