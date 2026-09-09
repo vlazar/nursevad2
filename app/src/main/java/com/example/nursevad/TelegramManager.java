@@ -3,7 +3,7 @@ package com.example.nursevad;
 import android.Manifest;
 import android.content.Context;
 import android.content.Intent;
-import android.content.pm.PackageManager;   // ← ADD THIS LINE
+import android.content.pm.PackageManager;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
@@ -23,7 +23,6 @@ import com.pengrad.telegrambot.response.GetFileResponse;
 import com.pengrad.telegrambot.Callback;
 import com.pengrad.telegrambot.model.request.InlineKeyboardButton;
 import com.pengrad.telegrambot.model.request.InlineKeyboardMarkup;
-import com.pengrad.telegrambot.model.request.ParseMode;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -32,7 +31,6 @@ import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -98,23 +96,23 @@ public class TelegramManager {
 
     public boolean isBotRunning() { return isRunning; }
 
-    private boolean isAuthorized(long userId, Set<Long> allowedIds) {
-        return allowedIds.contains(userId);
-    }
+    // ─── Guards & helpers ───
 
-    // ─── NEW: acceptance guard + outgoing targets ───
     private boolean isIncomingAllowed(long chatId, long fromId) {
         Long groupChatId = SettingsManager.getGroupChatIdLong(appContext);
         Set<Long> allowedIds = SettingsManager.getAllowedUserIds(appContext);
 
         if (groupChatId != null) {
-            // Group mode: only messages from the configured group chat
             if (chatId != groupChatId.longValue()) return false;
-            // Inside the group: any user if no allow-list, else only listed users
             return allowedIds.isEmpty() || allowedIds.contains(fromId);
         }
-        // Direct mode: only listed users
         return allowedIds.contains(fromId);
+    }
+
+    private String getUserName(com.pengrad.telegrambot.model.User from) {
+        if (from != null && from.firstName() != null) return from.firstName();
+        if (from != null && from.username() != null) return from.username();
+        return "Someone";
     }
 
     private List<Long> getBroadcastTargets() {
@@ -143,11 +141,15 @@ public class TelegramManager {
         });
     }
 
-    // Notify all users EXCEPT the one who performed the action
+    private void broadcastMessage(String text) {
+        for (Long chatId : getBroadcastTargets()) {
+            sendToChat(chatId, text);
+        }
+    }
+
     private void notifyOtherUsers(long excludeUserId, String message) {
         Long groupChatId = SettingsManager.getGroupChatIdLong(appContext);
         if (groupChatId != null) {
-            // In group mode a single post reaches everyone in the group
             sendToChat(groupChatId, message);
             return;
         }
@@ -159,17 +161,36 @@ public class TelegramManager {
         }
     }
 
-    private String getUserName(CallbackQuery callback) {
-        if (callback.from() != null && callback.from().firstName() != null) {
-            return callback.from().firstName();
+    // ─── Start / Stop shared by commands and menu buttons ───
+
+    private void startListening(long chatId, long userId, String userName, boolean confirm) {
+        if (ContextCompat.checkSelfPermission(appContext, Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED) {
+            if (confirm) {
+                sendToChat(chatId, "⚠️ Microphone permission is not granted. Open the app once and allow it, then try again.");
+            }
+            return;
         }
-        return "Someone";
+        VadService.startService(appContext);
+        notifyOtherUsers(userId, userName + " hit Start");
+        if (confirm) sendToChat(chatId, "🟢 Listening started");
     }
+
+    private void stopListening(long chatId, long userId, String userName, boolean confirm) {
+        VadService.stopService(appContext);
+        notifyOtherUsers(userId, userName + " hit Stop");
+        if (confirm) sendToChat(chatId, "⚪ Listening stopped");
+    }
+
+    // ─── Incoming messages: only /control, /start, /stop and voice notes ───
 
     private void handleMessage(Message message) {
         if (message.from() == null || message.chat() == null) return;
-        if (!isIncomingAllowed(message.chat().id(), message.from().id())) return;
+        long chatId = message.chat().id();
+        long userId = message.from().id();
+        if (!isIncomingAllowed(chatId, userId)) return;
 
+        // Voice messages keep their existing behavior
         if (message.voice() != null) {
             String senderName = "Telegram Bot";
             if (message.from().firstName() != null) {
@@ -178,20 +199,305 @@ public class TelegramManager {
             } else if (message.from().username() != null) {
                 senderName = message.from().username();
             }
-
             broadcastMessage("🔵 Voice Message from " + senderName);
             downloadAndQueueVoice(message.voice().fileId(), senderName);
             return;
         }
 
-        sendMainMenu(message.chat().id(), message.messageId());
+        String text = message.text();
+        if (text == null) return; // ignore captions, stickers, etc.
+        String cmd = text.trim();
+
+        if (cmd.equals("/control") || cmd.startsWith("/control@")) {
+            sendMainMenu(chatId, message.messageId());
+        } else if (cmd.equals("/start") || cmd.startsWith("/start@")) {
+            startListening(chatId, userId, getUserName(message.from()), true);
+        } else if (cmd.equals("/stop") || cmd.startsWith("/stop@")) {
+            stopListening(chatId, userId, getUserName(message.from()), true);
+        }
+        // Any other message is ignored
     }
 
-    private void broadcastMessage(String text) {
-        for (Long chatId : getBroadcastTargets()) {
-            sendToChat(chatId, text);
+    // ─── Callbacks ───
+
+    private void handleCallback(CallbackQuery callback) {
+        if (callback.from() == null || callback.message() == null || callback.message().chat() == null) return;
+        long chatId = callback.message().chat().id();
+        int messageId = callback.message().messageId();
+        long userId = callback.from().id();
+        if (!isIncomingAllowed(chatId, userId)) return;
+
+        String data = callback.data();
+        String userName = getUserName(callback.from());
+
+        if (data.equals("start_vad")) {
+            startListening(chatId, userId, userName, false);
+            editMainMenu(chatId, messageId);
+        } else if (data.equals("stop_vad")) {
+            stopListening(chatId, userId, userName, false);
+            editMainMenu(chatId, messageId);
+        } else if (data.equals("toggle_silent")) {
+            boolean current = SettingsManager.isSilentMode(appContext);
+            SettingsManager.saveSilentMode(appContext, !current);
+            editMainMenu(chatId, messageId);
+            notifyOtherUsers(userId, userName + " Toggled Silent Mode " + (!current ? "ON" : "OFF"));
+        } else if (data.equals("settings")) {
+            sendSettingsMenu(chatId, messageId);
+        } else if (data.equals("back_main")) {
+            editMainMenu(chatId, messageId);
+        } else if (data.startsWith("toggle_wait")) {
+            boolean current = SettingsManager.getWaitForEnd(appContext);
+            SettingsManager.saveWaitForEnd(appContext, !current);
+            sendSettingsMenu(chatId, messageId);
+            notifyOtherUsers(userId, userName + " Toggled Wait For End " + (!current ? "ON" : "OFF"));
+        } else if (data.equals("toggle_use_embeddings")) {
+            boolean current = SettingsManager.getUseEmbeddings(appContext);
+            SettingsManager.saveUseEmbeddings(appContext, !current);
+            sendSettingsMenu(chatId, messageId);
+            notifyOtherUsers(userId, userName + " Toggled Use Embeddings " + (!current ? "ON" : "OFF"));
+        } else if (data.equals("toggle_repeat_reminder")) {
+            boolean current = SettingsManager.getRepeatReminder(appContext);
+            SettingsManager.saveRepeatReminder(appContext, !current);
+            sendSettingsMenu(chatId, messageId);
+            notifyOtherUsers(userId, userName + " Toggled Repeat Reminder " + (!current ? "ON" : "OFF"));
+        } else if (data.startsWith("delay_")) {
+            int current = SettingsManager.getDelay(appContext);
+            int newValue = current;
+            if (data.equals("delay_inc") && current < 10) newValue = current + 1;
+            if (data.equals("delay_dec") && current > 0) newValue = current - 1;
+            if (newValue != current) {
+                SettingsManager.saveDelay(appContext, newValue);
+                notifyOtherUsers(userId, userName + " changed Delay from " + current + "s to " + newValue + "s");
+            }
+            sendSettingsMenu(chatId, messageId);
+        } else if (data.startsWith("dur_")) {
+            int current = SettingsManager.getDurationThreshold(appContext);
+            int newValue = current;
+            if (data.equals("dur_inc") && current < 10) newValue = current + 1;
+            if (data.equals("dur_dec") && current > 1) newValue = current - 1;
+            if (newValue != current) {
+                SettingsManager.saveDurationThreshold(appContext, newValue);
+                notifyOtherUsers(userId, userName + " changed Ignore Short from " + current + "s to " + newValue + "s");
+            }
+            sendSettingsMenu(chatId, messageId);
+        } else if (data.startsWith("thresh_")) {
+            String[] parts = data.split("_");
+            if (parts.length >= 3) {
+                int level = Integer.parseInt(parts[1]);
+                boolean inc = parts[2].equals("inc");
+                int[] thresholds = SettingsManager.getThresholds(appContext);
+                int oldValue = thresholds[level - 1];
+                int newValue = oldValue;
+                if (inc && oldValue < 100) newValue = oldValue + 5;
+                if (!inc && oldValue > 0) newValue = oldValue - 5;
+                if (newValue != oldValue) {
+                    thresholds[level - 1] = newValue;
+                    SettingsManager.saveThresholds(appContext, thresholds);
+                    notifyOtherUsers(userId, userName + " changed Level " + level + " from " + oldValue + "% to " + newValue + "%");
+                }
+            }
+            sendSettingsMenu(chatId, messageId);
+        } else if (data.startsWith("poi_thresh_")) {
+            int current = SettingsManager.getPoiThreshold(appContext);
+            int newValue = current;
+            if (data.equals("poi_thresh_inc") && current < 95) newValue = current + 5;
+            if (data.equals("poi_thresh_dec") && current > 55) newValue = current - 5;
+            if (newValue != current) {
+                SettingsManager.savePoiThreshold(appContext, newValue);
+                notifyOtherUsers(userId, userName + " changed POI Threshold from " +
+                        String.format(Locale.US, "%.2f", current / 100f) + " to " +
+                        String.format(Locale.US, "%.2f", newValue / 100f));
+            }
+            sendSettingsMenu(chatId, messageId);
+        } else if (data.startsWith("poni_thresh_")) {
+            int current = SettingsManager.getPoniThreshold(appContext);
+            int newValue = current;
+            if (data.equals("poni_thresh_inc") && current < 95) newValue = current + 5;
+            if (data.equals("poni_thresh_dec") && current > 55) newValue = current - 5;
+            if (newValue != current) {
+                SettingsManager.savePoniThreshold(appContext, newValue);
+                notifyOtherUsers(userId, userName + " changed PONI Threshold from " +
+                        String.format(Locale.US, "%.2f", current / 100f) + " to " +
+                        String.format(Locale.US, "%.2f", newValue / 100f));
+            }
+            sendSettingsMenu(chatId, messageId);
+        } else if (data.startsWith("rem_min_")) {
+            int current = SettingsManager.getReminderSpeechMin(appContext);
+            int newValue = current;
+            if (data.equals("rem_min_inc") && current < 180) newValue = current + 5;
+            if (data.equals("rem_min_dec") && current > 30) newValue = current - 5;
+            if (newValue != current) {
+                SettingsManager.saveReminderSpeechMin(appContext, newValue);
+                notifyOtherUsers(userId, userName + " changed Reminder After (Min) from " + current + "s to " + newValue + "s");
+            }
+            sendSettingsMenu(chatId, messageId);
+        } else if (data.startsWith("rem_max_")) {
+            int current = SettingsManager.getReminderSpeechMax(appContext);
+            int newValue = current;
+            if (data.equals("rem_max_inc") && current < 180) newValue = current + 5;
+            if (data.equals("rem_max_dec") && current > 30) newValue = current - 5;
+            if (newValue != current) {
+                SettingsManager.saveReminderSpeechMax(appContext, newValue);
+                notifyOtherUsers(userId, userName + " changed Reminder After (Max) from " + current + "s to " + newValue + "s");
+            }
+            sendSettingsMenu(chatId, messageId);
+        } else if (data.startsWith("rep_min_")) {
+            int current = SettingsManager.getRepeatReminderMin(appContext);
+            int newValue = current;
+            if (data.equals("rep_min_inc") && current < 30) newValue = current + 5;
+            if (data.equals("rep_min_dec") && current > 5) newValue = current - 5;
+            if (newValue != current) {
+                SettingsManager.saveRepeatReminderMin(appContext, newValue);
+                notifyOtherUsers(userId, userName + " changed Repeat Reminder After (Min) from " + current + "s to " + newValue + "s");
+            }
+            sendSettingsMenu(chatId, messageId);
+        } else if (data.startsWith("rep_max_")) {
+            int current = SettingsManager.getRepeatReminderMax(appContext);
+            int newValue = current;
+            if (data.equals("rep_max_inc") && current < 30) newValue = current + 5;
+            if (data.equals("rep_max_dec") && current > 5) newValue = current - 5;
+            if (newValue != current) {
+                SettingsManager.saveRepeatReminderMax(appContext, newValue);
+                notifyOtherUsers(userId, userName + " changed Repeat Reminder After (Max) from " + current + "s to " + newValue + "s");
+            }
+            sendSettingsMenu(chatId, messageId);
         }
+        // "status" callback removed
+
+        bot.execute(new AnswerCallbackQuery(callback.id()));
     }
+
+    // ─── Main menu ───
+
+    private String mainMenuText() {
+        String state = VadService.isVadListening ? "🟢 Listening..." : "⚪ Idle";
+        return "Nurse VAD Control Panel\nState: " + state;
+    }
+
+    private InlineKeyboardMarkup buildMainMenuMarkup() {
+        boolean listening = VadService.isVadListening;
+        boolean silent = SettingsManager.isSilentMode(appContext);
+        return new InlineKeyboardMarkup(
+                new InlineKeyboardButton[]{
+                        new InlineKeyboardButton(listening ? "🟥 Stop (Listening)" : "🟩 Start (Idle)")
+                                .callbackData(listening ? "stop_vad" : "start_vad")
+                },
+                new InlineKeyboardButton[]{
+                        new InlineKeyboardButton("Toggle Silent Mode (" + (silent ? "ON" : "OFF") + ")").callbackData("toggle_silent")
+                },
+                new InlineKeyboardButton[]{
+                        new InlineKeyboardButton("⚙️ Settings").callbackData("settings")
+                }
+        );
+    }
+
+    private void sendMainMenu(long chatId, int replyToId) {
+        SendMessage msg = new SendMessage(chatId, mainMenuText()).replyMarkup(buildMainMenuMarkup());
+        if (replyToId > 0) msg.replyToMessageId(replyToId);
+        bot.execute(msg);
+    }
+
+    private void editMainMenu(long chatId, int messageId) {
+        EditMessageText edit = new EditMessageText(chatId, messageId, mainMenuText())
+                .replyMarkup(buildMainMenuMarkup());
+        bot.execute(edit);
+    }
+
+    // ─── Settings menu ───
+
+    private void sendSettingsMenu(long chatId, int messageId) {
+        boolean wait = SettingsManager.getWaitForEnd(appContext);
+        int delay = SettingsManager.getDelay(appContext);
+        int dur = SettingsManager.getDurationThreshold(appContext);
+        int[] thresh = SettingsManager.getThresholds(appContext);
+        float poiTh = SettingsManager.getPoiThreshold(appContext) / 100f;
+        float poniTh = SettingsManager.getPoniThreshold(appContext) / 100f;
+        boolean repeatRem = SettingsManager.getRepeatReminder(appContext);
+        boolean useEmb = SettingsManager.getUseEmbeddings(appContext);
+        int repMin = SettingsManager.getRepeatReminderMin(appContext);
+        int repMax = SettingsManager.getRepeatReminderMax(appContext);
+        int remMin = SettingsManager.getReminderSpeechMin(appContext);
+        int remMax = SettingsManager.getReminderSpeechMax(appContext);
+
+        String text = "⚙️ Nurse VAD Settings";
+
+        InlineKeyboardMarkup markup = new InlineKeyboardMarkup(
+                new InlineKeyboardButton[]{ new InlineKeyboardButton("Toggle Wait (" + (wait ? "ON" : "OFF") + ")").callbackData("toggle_wait") },
+                new InlineKeyboardButton[]{
+                    new InlineKeyboardButton("-1s").callbackData("delay_dec"),
+                    new InlineKeyboardButton("Delay: " + delay + "s").callbackData("noop"),
+                    new InlineKeyboardButton("+1s").callbackData("delay_inc")
+                },
+                new InlineKeyboardButton[]{
+                    new InlineKeyboardButton("-1s").callbackData("dur_dec"),
+                    new InlineKeyboardButton("Ignore: " + dur + "s").callbackData("noop"),
+                    new InlineKeyboardButton("+1s").callbackData("dur_inc")
+                },
+                new InlineKeyboardButton[]{
+                    new InlineKeyboardButton("-5").callbackData("thresh_1_dec"),
+                    new InlineKeyboardButton("Level 1: " + thresh[0]).callbackData("noop"),
+                    new InlineKeyboardButton("+5").callbackData("thresh_1_inc")
+                },
+                new InlineKeyboardButton[]{
+                    new InlineKeyboardButton("-5").callbackData("thresh_2_dec"),
+                    new InlineKeyboardButton("Level 2: " + thresh[1]).callbackData("noop"),
+                    new InlineKeyboardButton("+5").callbackData("thresh_2_inc")
+                },
+                new InlineKeyboardButton[]{
+                    new InlineKeyboardButton("-5").callbackData("thresh_3_dec"),
+                    new InlineKeyboardButton("Level 3: " + thresh[2]).callbackData("noop"),
+                    new InlineKeyboardButton("+5").callbackData("thresh_3_inc")
+                },
+                new InlineKeyboardButton[]{
+                    new InlineKeyboardButton("-5").callbackData("thresh_4_dec"),
+                    new InlineKeyboardButton("Level 4: " + thresh[3]).callbackData("noop"),
+                    new InlineKeyboardButton("+5").callbackData("thresh_4_inc")
+                },
+                new InlineKeyboardButton[]{
+                    new InlineKeyboardButton("-5").callbackData("thresh_5_dec"),
+                    new InlineKeyboardButton("Level 5: " + thresh[4]).callbackData("noop"),
+                    new InlineKeyboardButton("+5").callbackData("thresh_5_inc")
+                },
+                new InlineKeyboardButton[]{ new InlineKeyboardButton("Use Embeddings (" + (useEmb ? "ON" : "OFF") + ")").callbackData("toggle_use_embeddings") },
+                new InlineKeyboardButton[]{
+                    new InlineKeyboardButton("-0.05").callbackData("poi_thresh_dec"),
+                    new InlineKeyboardButton(String.format(Locale.US, "POI Threshold: %.2f", poiTh)).callbackData("noop"),
+                    new InlineKeyboardButton("+0.05").callbackData("poi_thresh_inc")
+                },
+                new InlineKeyboardButton[]{
+                    new InlineKeyboardButton("-0.05").callbackData("poni_thresh_dec"),
+                    new InlineKeyboardButton(String.format(Locale.US, "PONI Threshold: %.2f", poniTh)).callbackData("noop"),
+                    new InlineKeyboardButton("+0.05").callbackData("poni_thresh_inc")
+                },
+                new InlineKeyboardButton[]{ new InlineKeyboardButton("Repeat Reminder (" + (repeatRem ? "ON" : "OFF") + ")").callbackData("toggle_repeat_reminder") },
+                new InlineKeyboardButton[]{
+                    new InlineKeyboardButton("-5s").callbackData("rem_min_dec"),
+                    new InlineKeyboardButton("Rem After Min: " + remMin + "s").callbackData("noop"),
+                    new InlineKeyboardButton("+5s").callbackData("rem_min_inc")
+                },
+                new InlineKeyboardButton[]{
+                    new InlineKeyboardButton("-5s").callbackData("rem_max_dec"),
+                    new InlineKeyboardButton("Rem After Max: " + remMax + "s").callbackData("noop"),
+                    new InlineKeyboardButton("+5s").callbackData("rem_max_inc")
+                },
+                new InlineKeyboardButton[]{
+                    new InlineKeyboardButton("-5s").callbackData("rep_min_dec"),
+                    new InlineKeyboardButton("Rep After Min: " + repMin + "s").callbackData("noop"),
+                    new InlineKeyboardButton("+5s").callbackData("rep_min_inc")
+                },
+                new InlineKeyboardButton[]{
+                    new InlineKeyboardButton("-5s").callbackData("rep_max_dec"),
+                    new InlineKeyboardButton("Rep After Max: " + repMax + "s").callbackData("noop"),
+                    new InlineKeyboardButton("+5s").callbackData("rep_max_inc")
+                },
+                new InlineKeyboardButton[]{ new InlineKeyboardButton("🔙 Back").callbackData("back_main") }
+        );
+
+        EditMessageText edit = new EditMessageText(chatId, messageId, text).replyMarkup(markup);
+        bot.execute(edit);
+    }
+
+    // ─── Voice message download with retry ───
 
     private void downloadAndQueueVoice(String fileId, String senderName) {
         downloadWithRetry(fileId, senderName, 0);
@@ -265,345 +571,12 @@ public class TelegramManager {
         }
     }
 
-    private void handleCallback(CallbackQuery callback) {
-        if (callback.from() == null || callback.message() == null || callback.message().chat() == null) return;
-        if (!isIncomingAllowed(callback.message().chat().id(), callback.from().id())) return;
-
-        long chatId = callback.message().chat().id();
-        int messageId = callback.message().messageId();
-        String data = callback.data();
-        long userId = callback.from().id();
-        String userName = getUserName(callback);
-
-        if (data.equals("start_vad")) {
-            // FIX: Don't attempt a background mic FGS start without the runtime
-            // permission — it throws SecurityException and leaves a stale ERR status.
-            if (ContextCompat.checkSelfPermission(appContext, Manifest.permission.RECORD_AUDIO)
-                    != PackageManager.PERMISSION_GRANTED) {
-                editMessage(chatId, messageId,
-                        "⚠️ Microphone permission is not granted. Open the app once and allow it, then try again.");
-            } else {
-                VadService.startService(appContext);
-                editMessage(chatId, messageId, "🟩 Start\n🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩");
-                notifyOtherUsers(userId, userName + " hit Start");
-            }
-        } else if (data.equals("stop_vad")) {
-            VadService.stopService(appContext);
-            editMessage(chatId, messageId, "🟥 Stop\n🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥🟥");
-            notifyOtherUsers(userId, userName + " hit Stop");
-
-        } else if (data.equals("toggle_silent")) {
-            boolean current = SettingsManager.isSilentMode(appContext);
-            boolean newValue = !current;
-            SettingsManager.saveSilentMode(appContext, newValue);
-            editMainMenu(chatId, messageId);
-            notifyOtherUsers(userId, userName + " Toggled Silent Mode " + (newValue ? "ON" : "OFF"));
-
-        } else if (data.equals("status")) {
-            String state = VadService.isVadListening ? "Listening..." : "Idle";
-            editMessage(chatId, messageId, "📊 Current State: " + state);
-
-        } else if (data.equals("settings")) {
-            sendSettingsMenu(chatId, messageId);
-
-        } else if (data.equals("back_main")) {
-            editMainMenu(chatId, messageId);
-
-        } else if (data.startsWith("toggle_wait")) {
-            boolean current = SettingsManager.getWaitForEnd(appContext);
-            boolean newValue = !current;
-            SettingsManager.saveWaitForEnd(appContext, newValue);
-            sendSettingsMenu(chatId, messageId);
-            notifyOtherUsers(userId, userName + " Toggled Wait For End " + (newValue ? "ON" : "OFF"));
-
-        } else if (data.equals("toggle_use_embeddings")) {
-            boolean current = SettingsManager.getUseEmbeddings(appContext);
-            boolean newValue = !current;
-            SettingsManager.saveUseEmbeddings(appContext, newValue);
-            sendSettingsMenu(chatId, messageId);
-            notifyOtherUsers(userId, userName + " Toggled Use Embeddings " + (newValue ? "ON" : "OFF"));
-
-        } else if (data.equals("toggle_repeat_reminder")) {
-            boolean current = SettingsManager.getRepeatReminder(appContext);
-            boolean newValue = !current;
-            SettingsManager.saveRepeatReminder(appContext, newValue);
-            sendSettingsMenu(chatId, messageId);
-            notifyOtherUsers(userId, userName + " Toggled Repeat Reminder " + (newValue ? "ON" : "OFF"));
-
-        } else if (data.startsWith("delay_")) {
-            int current = SettingsManager.getDelay(appContext);
-            int newValue = current;
-            if (data.equals("delay_inc") && current < 10) newValue = current + 1;
-            if (data.equals("delay_dec") && current > 0) newValue = current - 1;
-            if (newValue != current) {
-                SettingsManager.saveDelay(appContext, newValue);
-                notifyOtherUsers(userId, userName + " changed Delay from " + current + "s to " + newValue + "s");
-            }
-            sendSettingsMenu(chatId, messageId);
-
-        } else if (data.startsWith("dur_")) {
-            int current = SettingsManager.getDurationThreshold(appContext);
-            int newValue = current;
-            if (data.equals("dur_inc") && current < 10) newValue = current + 1;
-            if (data.equals("dur_dec") && current > 1) newValue = current - 1;
-            if (newValue != current) {
-                SettingsManager.saveDurationThreshold(appContext, newValue);
-                notifyOtherUsers(userId, userName + " changed Ignore Short from " + current + "s to " + newValue + "s");
-            }
-            sendSettingsMenu(chatId, messageId);
-
-        } else if (data.startsWith("thresh_")) {
-            String[] parts = data.split("_");
-            if (parts.length >= 3) {
-                int level = Integer.parseInt(parts[1]);
-                boolean inc = parts[2].equals("inc");
-                int[] thresholds = SettingsManager.getThresholds(appContext);
-                int oldValue = thresholds[level - 1];
-                int newValue = oldValue;
-                if (inc && oldValue < 100) newValue = oldValue + 5;
-                if (!inc && oldValue > 0) newValue = oldValue - 5;
-                if (newValue != oldValue) {
-                    thresholds[level - 1] = newValue;
-                    SettingsManager.saveThresholds(appContext, thresholds);
-                    notifyOtherUsers(userId, userName + " changed Level " + level + " from " + oldValue + "% to " + newValue + "%");
-                }
-            }
-            sendSettingsMenu(chatId, messageId);
-
-        } else if (data.startsWith("poi_thresh_")) {
-            int current = SettingsManager.getPoiThreshold(appContext);
-            int newValue = current;
-            if (data.equals("poi_thresh_inc") && current < 95) newValue = current + 5;
-            if (data.equals("poi_thresh_dec") && current > 55) newValue = current - 5;
-            if (newValue != current) {
-                SettingsManager.savePoiThreshold(appContext, newValue);
-                notifyOtherUsers(userId, userName + " changed POI Threshold from " +
-                        String.format(Locale.US, "%.2f", current / 100f) + " to " +
-                        String.format(Locale.US, "%.2f", newValue / 100f));
-            }
-            sendSettingsMenu(chatId, messageId);
-
-        } else if (data.startsWith("poni_thresh_")) {
-            int current = SettingsManager.getPoniThreshold(appContext);
-            int newValue = current;
-            if (data.equals("poni_thresh_inc") && current < 95) newValue = current + 5;
-            if (data.equals("poni_thresh_dec") && current > 55) newValue = current - 5;
-            if (newValue != current) {
-                SettingsManager.savePoniThreshold(appContext, newValue);
-                notifyOtherUsers(userId, userName + " changed PONI Threshold from " +
-                        String.format(Locale.US, "%.2f", current / 100f) + " to " +
-                        String.format(Locale.US, "%.2f", newValue / 100f));
-            }
-            sendSettingsMenu(chatId, messageId);
-
-        } else if (data.startsWith("rem_min_")) {
-            int current = SettingsManager.getReminderSpeechMin(appContext);
-            int newValue = current;
-            if (data.equals("rem_min_inc") && current < 180) newValue = current + 5;
-            if (data.equals("rem_min_dec") && current > 30) newValue = current - 5;
-            if (newValue != current) {
-                SettingsManager.saveReminderSpeechMin(appContext, newValue);
-                notifyOtherUsers(userId, userName + " changed Reminder After (Min) from " + current + "s to " + newValue + "s");
-            }
-            sendSettingsMenu(chatId, messageId);
-
-        } else if (data.startsWith("rem_max_")) {
-            int current = SettingsManager.getReminderSpeechMax(appContext);
-            int newValue = current;
-            if (data.equals("rem_max_inc") && current < 180) newValue = current + 5;
-            if (data.equals("rem_max_dec") && current > 30) newValue = current - 5;
-            if (newValue != current) {
-                SettingsManager.saveReminderSpeechMax(appContext, newValue);
-                notifyOtherUsers(userId, userName + " changed Reminder After (Max) from " + current + "s to " + newValue + "s");
-            }
-            sendSettingsMenu(chatId, messageId);
-
-        } else if (data.startsWith("rep_min_")) {
-            int current = SettingsManager.getRepeatReminderMin(appContext);
-            int newValue = current;
-            if (data.equals("rep_min_inc") && current < 30) newValue = current + 5;
-            if (data.equals("rep_min_dec") && current > 5) newValue = current - 5;
-            if (newValue != current) {
-                SettingsManager.saveRepeatReminderMin(appContext, newValue);
-                notifyOtherUsers(userId, userName + " changed Repeat Reminder After (Min) from " + current + "s to " + newValue + "s");
-            }
-            sendSettingsMenu(chatId, messageId);
-
-        } else if (data.startsWith("rep_max_")) {
-            int current = SettingsManager.getRepeatReminderMax(appContext);
-            int newValue = current;
-            if (data.equals("rep_max_inc") && current < 30) newValue = current + 5;
-            if (data.equals("rep_max_dec") && current > 5) newValue = current - 5;
-            if (newValue != current) {
-                SettingsManager.saveRepeatReminderMax(appContext, newValue);
-                notifyOtherUsers(userId, userName + " changed Repeat Reminder After (Max) from " + current + "s to " + newValue + "s");
-            }
-            sendSettingsMenu(chatId, messageId);
-        }
-
-        bot.execute(new AnswerCallbackQuery(callback.id()));
-    }
-
-    private void sendMainMenu(long chatId, int replyToId) {
-        String state = VadService.isVadListening ? "🟢 Listening..." : "⚪ Idle";
-        boolean silent = SettingsManager.isSilentMode(appContext);
-        String text = "*Nurse VAD Control Panel*\nState: " + state;
-
-        InlineKeyboardMarkup markup = new InlineKeyboardMarkup(
-                new InlineKeyboardButton[]{
-                        new InlineKeyboardButton("▶ Start").callbackData("start_vad"),
-                        new InlineKeyboardButton("⏹ Stop").callbackData("stop_vad")
-                },
-                new InlineKeyboardButton[]{
-                        new InlineKeyboardButton("Toggle Silent Mode (" + (silent ? "ON" : "OFF") + ")").callbackData("toggle_silent")
-                },
-                new InlineKeyboardButton[]{
-                        new InlineKeyboardButton("📊 Status").callbackData("status")
-                },
-                new InlineKeyboardButton[]{
-                        new InlineKeyboardButton("⚙️ Settings").callbackData("settings")
-                }
-        );
-
-        SendMessage msg = new SendMessage(chatId, text).parseMode(ParseMode.Markdown).replyMarkup(markup);
-        if (replyToId > 0) msg.replyToMessageId(replyToId);
-        bot.execute(msg);
-    }
-
-    private void editMainMenu(long chatId, int messageId) {
-        String state = VadService.isVadListening ? "🟢 Listening..." : "⚪ Idle";
-        boolean silent = SettingsManager.isSilentMode(appContext);
-        String text = "*Nurse VAD Control Panel*\nState: " + state;
-
-        InlineKeyboardMarkup markup = new InlineKeyboardMarkup(
-                new InlineKeyboardButton[]{
-                        new InlineKeyboardButton("▶ Start").callbackData("start_vad"),
-                        new InlineKeyboardButton("⏹ Stop").callbackData("stop_vad")
-                },
-                new InlineKeyboardButton[]{
-                        new InlineKeyboardButton("Toggle Silent Mode (" + (silent ? "ON" : "OFF") + ")").callbackData("toggle_silent")
-                },
-                new InlineKeyboardButton[]{
-                        new InlineKeyboardButton("📊 Status").callbackData("status")
-                },
-                new InlineKeyboardButton[]{
-                        new InlineKeyboardButton("⚙️ Settings").callbackData("settings")
-                }
-        );
-
-        EditMessageText edit = new EditMessageText(chatId, messageId, text)
-                .parseMode(ParseMode.Markdown)
-                .replyMarkup(markup);
-        bot.execute(edit);
-    }
-
-    private void sendSettingsMenu(long chatId, int messageId) {
-        boolean wait = SettingsManager.getWaitForEnd(appContext);
-        int delay = SettingsManager.getDelay(appContext);
-        int dur = SettingsManager.getDurationThreshold(appContext);
-        int[] thresh = SettingsManager.getThresholds(appContext);
-        float poiTh = SettingsManager.getPoiThreshold(appContext) / 100f;
-        float poniTh = SettingsManager.getPoniThreshold(appContext) / 100f;
-        boolean repeatRem = SettingsManager.getRepeatReminder(appContext);
-        boolean useEmb = SettingsManager.getUseEmbeddings(appContext);
-        int repMin = SettingsManager.getRepeatReminderMin(appContext);
-        int repMax = SettingsManager.getRepeatReminderMax(appContext);
-        int remMin = SettingsManager.getReminderSpeechMin(appContext);
-        int remMax = SettingsManager.getReminderSpeechMax(appContext);
-
-        String text = "*⚙️ Settings*\n" +
-                "Wait for End: " + (wait ? "ON" : "OFF") + "\n" +
-                "Delay: " + delay + "s\n" +
-                "Ignore Short: " + dur + "s\n" +
-                "Thresholds: " + thresh[0] + "%, " + thresh[1] + "%, " + thresh[2] + "%, " + thresh[3] + "%, " + thresh[4] + "%";
-
-        InlineKeyboardMarkup markup = new InlineKeyboardMarkup(
-                new InlineKeyboardButton[]{ new InlineKeyboardButton("Toggle Wait (" + (wait ? "ON" : "OFF") + ")").callbackData("toggle_wait") },
-                new InlineKeyboardButton[]{
-                    new InlineKeyboardButton("-1s").callbackData("delay_dec"),
-                    new InlineKeyboardButton("Delay: " + delay + "s").callbackData("noop"),
-                    new InlineKeyboardButton("+1s").callbackData("delay_inc")
-                },
-                new InlineKeyboardButton[]{
-                    new InlineKeyboardButton("-1s").callbackData("dur_dec"),
-                    new InlineKeyboardButton("Ignore: " + dur + "s").callbackData("noop"),
-                    new InlineKeyboardButton("+1s").callbackData("dur_inc")
-                },
-                new InlineKeyboardButton[]{
-                    new InlineKeyboardButton("-5").callbackData("thresh_1_dec"),
-                    new InlineKeyboardButton("Level 1: " + thresh[0]).callbackData("noop"),
-                    new InlineKeyboardButton("+5").callbackData("thresh_1_inc")
-                },
-                new InlineKeyboardButton[]{
-                    new InlineKeyboardButton("-5").callbackData("thresh_2_dec"),
-                    new InlineKeyboardButton("Level 2: " + thresh[1]).callbackData("noop"),
-                    new InlineKeyboardButton("+5").callbackData("thresh_2_inc")
-                },
-                new InlineKeyboardButton[]{
-                    new InlineKeyboardButton("-5").callbackData("thresh_3_dec"),
-                    new InlineKeyboardButton("Level 3: " + thresh[2]).callbackData("noop"),
-                    new InlineKeyboardButton("+5").callbackData("thresh_3_inc")
-                },
-                new InlineKeyboardButton[]{
-                    new InlineKeyboardButton("-5").callbackData("thresh_4_dec"),
-                    new InlineKeyboardButton("Level 4: " + thresh[3]).callbackData("noop"),
-                    new InlineKeyboardButton("+5").callbackData("thresh_4_inc")
-                },
-                new InlineKeyboardButton[]{
-                    new InlineKeyboardButton("-5").callbackData("thresh_5_dec"),
-                    new InlineKeyboardButton("Level 5: " + thresh[4]).callbackData("noop"),
-                    new InlineKeyboardButton("+5").callbackData("thresh_5_inc")
-                },
-                // Use Embeddings moved here (before POI Threshold)
-                new InlineKeyboardButton[]{ new InlineKeyboardButton("Use Embeddings (" + (useEmb ? "ON" : "OFF") + ")").callbackData("toggle_use_embeddings") },
-                new InlineKeyboardButton[]{
-                    new InlineKeyboardButton("-0.05").callbackData("poi_thresh_dec"),
-                    new InlineKeyboardButton(String.format(Locale.US, "POI Threshold: %.2f", poiTh)).callbackData("noop"),
-                    new InlineKeyboardButton("+0.05").callbackData("poi_thresh_inc")
-                },
-                new InlineKeyboardButton[]{
-                    new InlineKeyboardButton("-0.05").callbackData("poni_thresh_dec"),
-                    new InlineKeyboardButton(String.format(Locale.US, "PONI Threshold: %.2f", poniTh)).callbackData("noop"),
-                    new InlineKeyboardButton("+0.05").callbackData("poni_thresh_inc")
-                },
-                new InlineKeyboardButton[]{ new InlineKeyboardButton("Repeat Reminder (" + (repeatRem ? "ON" : "OFF") + ")").callbackData("toggle_repeat_reminder") },
-                new InlineKeyboardButton[]{
-                    new InlineKeyboardButton("-5s").callbackData("rem_min_dec"),
-                    new InlineKeyboardButton("Rem After Min: " + remMin + "s").callbackData("noop"),
-                    new InlineKeyboardButton("+5s").callbackData("rem_min_inc")
-                },
-                new InlineKeyboardButton[]{
-                    new InlineKeyboardButton("-5s").callbackData("rem_max_dec"),
-                    new InlineKeyboardButton("Rem After Max: " + remMax + "s").callbackData("noop"),
-                    new InlineKeyboardButton("+5s").callbackData("rem_max_inc")
-                },
-                new InlineKeyboardButton[]{
-                    new InlineKeyboardButton("-5s").callbackData("rep_min_dec"),
-                    new InlineKeyboardButton("Rep After Min: " + repMin + "s").callbackData("noop"),
-                    new InlineKeyboardButton("+5s").callbackData("rep_min_inc")
-                },
-                new InlineKeyboardButton[]{
-                    new InlineKeyboardButton("-5s").callbackData("rep_max_dec"),
-                    new InlineKeyboardButton("Rep After Max: " + repMax + "s").callbackData("noop"),
-                    new InlineKeyboardButton("+5s").callbackData("rep_max_inc")
-                },
-                new InlineKeyboardButton[]{ new InlineKeyboardButton("🔙 Back").callbackData("back_main") }
-        );
-
-        EditMessageText edit = new EditMessageText(chatId, messageId, text)
-                .parseMode(ParseMode.Markdown)
-                .replyMarkup(markup);
-        bot.execute(edit);
-    }
-
-    private void editMessage(long chatId, int messageId, String text) {
-        bot.execute(new EditMessageText(chatId, messageId, text).parseMode(ParseMode.Markdown));
-    }
+    // ─── Outgoing event messages ───
 
     public void sendAudioEvent(String wavUri, int level, String responseFileName, boolean isPoni) {
         if (!isRunning || bot == null) return;
-        Set<Long> allowedIds = new HashSet<>(getBroadcastTargets());
-        if (allowedIds.isEmpty()) return;
+        List<Long> targets = getBroadcastTargets();
+        if (targets.isEmpty()) return;
 
         try {
             File file = new File(wavUri.replace("file://", ""));
@@ -612,7 +585,7 @@ public class TelegramManager {
             String emoji = isPoni ? "⚪️" : (level == 3 ? "🌕" : level == 4 ? "🟠" : level == 5 ? "🔴" : "🟢");
             String caption = emoji + " " + (isPoni ? "PONI is talking" : (responseFileName != null ? responseFileName : "No file found"));
 
-            for (Long chatId : allowedIds) {
+            for (Long chatId : targets) {
                 SendAudio sendAudio = new SendAudio(chatId, file)
                         .caption(caption)
                         .title("Nurse VAD Recording");
@@ -637,9 +610,8 @@ public class TelegramManager {
 
     public void sendTextMessage(String text) {
         if (!isRunning || bot == null) return;
-        Set<Long> allowedIds = new HashSet<>(getBroadcastTargets());
         for (Long chatId : getBroadcastTargets()) {
-            sendToChat(chatId, text);   // or keep the inline callback version
+            sendToChat(chatId, text);
         }
     }
 }
