@@ -187,7 +187,20 @@ public class TelegramManager {
         long userId = message.from().id();
         if (!isIncomingAllowed(chatId, userId)) return;
 
-        if (message.voice() != null) {
+        if (message.voice() != null || message.audio() != null) {
+            boolean isAudio = message.voice() == null;
+            String fileId = isAudio ? message.audio().fileId() : message.voice().fileId();
+            String label = isAudio ? "Audio" : "Voice Message";
+
+            String mime = isAudio ? message.audio().mimeType() : "audio/ogg";
+            String ext = ".mp3";
+            if (mime != null) {
+                if (mime.contains("wav")) ext = ".wav";
+                else if (mime.contains("ogg") || mime.contains("opus")) ext = ".ogg";
+                else if (mime.contains("mp4") || mime.contains("aac")) ext = ".m4a";
+                else if (mime.contains("mpeg") || mime.contains("mp3")) ext = ".mp3";
+            }
+
             String senderName = "Telegram Bot";
             if (message.from().firstName() != null) {
                 senderName = message.from().firstName();
@@ -195,8 +208,9 @@ public class TelegramManager {
             } else if (message.from().username() != null) {
                 senderName = message.from().username();
             }
-            broadcastMessage("🎤 Voice Message from " + senderName);
-            downloadAndQueueVoice(message.voice().fileId(), senderName);
+
+            broadcastMessage("🎤 " + label + " from " + senderName);
+            downloadAndQueueVoice(fileId, senderName, isAudio, ext);
             return;
         }
 
@@ -211,12 +225,12 @@ public class TelegramManager {
             if (!tryStartListening()) {
                 sendToChat(chatId, MIC_WARNING);
             } else {
-                sendToChat(chatId, "🟢 Listening started");
+                sendToChat(chatId, "🟩🟩🟩 Start 🟩🟩🟩");
             }
             notifyOtherUsers(userId, userName + " hit Start");
         } else if (cmd.equals("/stop") || cmd.startsWith("/stop@")) {
             stopListeningNow();
-            sendToChat(chatId, "⚪ Listening stopped");
+            sendToChat(chatId, "🟥🟥🟥 Stop 🟥🟥🟥");
             notifyOtherUsers(userId, userName + " hit Stop");
         }
         // Any other message is ignored
@@ -508,11 +522,11 @@ public class TelegramManager {
 
     // ─── Voice message download with retry ───
 
-    private void downloadAndQueueVoice(String fileId, String senderName) {
-        downloadWithRetry(fileId, senderName, 0);
+    private void downloadAndQueueVoice(String fileId, String senderName, boolean isAudio, String ext) {
+        downloadWithRetry(fileId, senderName, 0, isAudio, ext);
     }
 
-    private void downloadWithRetry(String fileId, String senderName, int attempt) {
+    private void downloadWithRetry(String fileId, String senderName, int attempt, boolean isAudio, String ext) {
         final int MAX_RETRIES = 3;
 
         bot.execute(new GetFile(fileId), new Callback<GetFile, GetFileResponse>() {
@@ -529,7 +543,7 @@ public class TelegramManager {
                             connection.setReadTimeout(15000);
                             connection.connect();
 
-                            File tempFile = new File(appContext.getCacheDir(), "tg_voice_" + System.currentTimeMillis() + ".ogg");
+                            File tempFile = new File(appContext.getCacheDir(), "tg_media_" + System.currentTimeMillis() + ext);
                             FileOutputStream output = new FileOutputStream(tempFile);
                             InputStream input = connection.getInputStream();
 
@@ -546,37 +560,40 @@ public class TelegramManager {
                             i.setAction("PLAY_TELEGRAM_VOICE");
                             i.putExtra("PATH", tempFile.getAbsolutePath());
                             i.putExtra("SENDER", senderName);
+                            i.putExtra("IS_AUDIO", isAudio);
                             appContext.startService(i);
 
                         } catch (Exception e) {
                             Log.e("TelegramManager", "Download attempt " + (attempt + 1) + " failed", e);
-                            handleDownloadRetry(fileId, senderName, attempt, MAX_RETRIES);
+                            handleDownloadRetry(fileId, senderName, attempt, MAX_RETRIES, isAudio);
                         }
                     }).start();
                 } else {
-                    handleDownloadRetry(fileId, senderName, attempt, MAX_RETRIES);
+                    handleDownloadRetry(fileId, senderName, attempt, MAX_RETRIES, isAudio);
                 }
             }
 
             @Override
             public void onFailure(GetFile request, IOException e) {
-                handleDownloadRetry(fileId, senderName, attempt, MAX_RETRIES);
+                handleDownloadRetry(fileId, senderName, attempt, MAX_RETRIES, isAudio);
             }
         });
     }
 
-    private void handleDownloadRetry(String fileId, String senderName, int attempt, int maxRetries) {
+    private void handleDownloadRetry(String fileId, String senderName, int attempt, int maxRetries, boolean isAudio) {
+        String label = isAudio ? "Audio" : "Voice message";
         if (attempt < maxRetries - 1) {
             long delay = (long) Math.pow(2, attempt) * 1000;
+            DebugLogger.log(label + " download retry " + (attempt + 2) + " in " + delay + "ms");
             new Handler(Looper.getMainLooper()).postDelayed(() -> {
-                downloadWithRetry(fileId, senderName, attempt + 1);
+                downloadWithRetry(fileId, senderName, attempt + 1, isAudio, null);
             }, delay);
         } else {
-            DebugLogger.log("All voice download attempts failed for sender: " + senderName);
+            DebugLogger.log("All " + label.toLowerCase() + " download attempts failed for sender: " + senderName);
             EventRepository.getInstance().addEvent(
-                new LogEvent(LogEvent.Type.WARNING, "Voice message download failed from " + senderName)
+                new LogEvent(LogEvent.Type.WARNING, label + " download failed from " + senderName)
             );
-            broadcastMessage("⚠️ Failed to download voice message from " + senderName);
+            broadcastMessage("⚠️ Failed to download " + label.toLowerCase() + " from " + senderName);
         }
     }
 

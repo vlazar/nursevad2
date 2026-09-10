@@ -136,7 +136,8 @@ public class LogAdapter extends ListAdapter<LogEvent, LogAdapter.ViewHolder> {
                     swatch.setImageResource(R.drawable.ic_play);
                     swatch.setColorFilter(Color.parseColor("#1976D2"));
                 }
-                tvTitle.setText(time + " - Voice Message");
+                String mediaLabel = (event.displayName != null && !event.displayName.isEmpty()) ? event.displayName : "Voice Message";
+                tvTitle.setText(time + " - " + mediaLabel);
                 tvTitle.setTextColor(Color.parseColor("#1976D2"));
                 tvTitle.setTypeface(null, android.graphics.Typeface.BOLD);
                 tvPlayed.setText("from " + (event.senderName != null ? event.senderName : "Telegram Bot"));

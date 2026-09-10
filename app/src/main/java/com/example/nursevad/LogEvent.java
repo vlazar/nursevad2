@@ -36,12 +36,17 @@ public class LogEvent {
     }
 
     public LogEvent(Type type, String filePath, String senderName) {
+        this(type, filePath, senderName, "Voice Message");
+    }
+
+    // NEW: label-aware constructor ("Voice Message" or "Audio")
+    public LogEvent(Type type, String filePath, String senderName, String mediaLabel) {
         this.id = UUID.randomUUID().toString();
         this.type = type;
         this.timestamp = System.currentTimeMillis();
         this.recordedSpeechUri = android.net.Uri.fromFile(new java.io.File(filePath)).toString();
         this.senderName = senderName;
-        this.displayName = "Voice Message";
+        this.displayName = mediaLabel;
     }
 
     public LogEvent(Type type, AudioFile file) {
@@ -52,7 +57,6 @@ public class LogEvent {
         this.uriString = file.uri;
     }
 
-    // Constructor for WARNING events (e.g., download failures)
     public LogEvent(Type type, String message) {
         this.id = UUID.randomUUID().toString();
         this.type = type;

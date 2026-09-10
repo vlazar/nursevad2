@@ -49,7 +49,17 @@ public class VadService extends Service {
     private Map<Integer, String> lastPlayed = new HashMap<>();
 
     private Handler handler = new Handler(Looper.getMainLooper());
-    private Queue<String> telegramVoiceQueue = new LinkedList<>();
+
+    // Queued Telegram media (voice messages and audio messages)
+    private static class TelegramMedia {
+        final String path;
+        final boolean isAudio;
+        TelegramMedia(String path, boolean isAudio) {
+            this.path = path;
+            this.isAudio = isAudio;
+        }
+    }
+    private Queue<TelegramMedia> telegramVoiceQueue = new LinkedList<>();
 
     private List<AudioFile> introFiles = new ArrayList<>();
     private Queue<AudioFile> introQueue = new LinkedList<>();
@@ -157,11 +167,15 @@ public class VadService extends Service {
             if ("PLAY_TELEGRAM_VOICE".equals(intent.getAction())) {
                 String path = intent.getStringExtra("PATH");
                 String sender = intent.getStringExtra("SENDER");
+                boolean isAudio = intent.getBooleanExtra("IS_AUDIO", false);
                 if (path != null) {
-                    LogEvent event = new LogEvent(LogEvent.Type.TELEGRAM_VOICE, path, sender != null ? sender : "Telegram Bot");
+                    LogEvent event = new LogEvent(LogEvent.Type.TELEGRAM_VOICE, path,
+                            sender != null ? sender : "Telegram Bot",
+                            isAudio ? "Audio" : "Voice Message");
                     EventRepository.getInstance().addEvent(event);
-                    
-                    telegramVoiceQueue.add(path);
+
+                    telegramVoiceQueue.add(new TelegramMedia(path, isAudio));
+                    DebugLogger.log("Telegram media queued: " + (isAudio ? "audio" : "voice") + " from " + sender);
                     if (!isProcessingResponse && (mediaPlayer == null || !mediaPlayer.isPlaying())) {
                         playNextTelegramVoice();
                     }
@@ -597,26 +611,25 @@ public class VadService extends Service {
     }
 
     private void playNextTelegramVoice() {
-        String path = telegramVoiceQueue.poll();
-        if (path == null) {
+        TelegramMedia media = telegramVoiceQueue.poll();
+        if (media == null) {
             onPlaybackComplete();
             return;
         }
-        
+        String label = media.isAudio ? "Audio" : "Voice Message";
+
         isPaused = true;
-        isProcessingResponse = true; 
-        pauseReminderTimer(); 
-        
+        isProcessingResponse = true;
         EventBus.getInstance().postVolume(0);
         EventBus.getInstance().postDebug("Vol: 0% | VAD Prob: 0,000");
-        EventBus.getInstance().postStatus("Playing Telegram Voice...");
-        
-        EventBus.getInstance().postPlayingUri(Uri.fromFile(new File(path)).toString());
-        
+        EventBus.getInstance().postStatus("Playing Telegram " + label + "...");
+
+        EventBus.getInstance().postPlayingUri(Uri.fromFile(new File(media.path)).toString());
+
         try {
             if (mediaPlayer != null) mediaPlayer.release();
             mediaPlayer = new MediaPlayer();
-            mediaPlayer.setDataSource(path);
+            mediaPlayer.setDataSource(media.path);
             mediaPlayer.prepare();
             mediaPlayer.setOnCompletionListener(mp -> onPlaybackComplete());
             mediaPlayer.start();
@@ -637,7 +650,7 @@ public class VadService extends Service {
         }
         
         EventRepository.getInstance().addEvent(new LogEvent(LogEvent.Type.INTRO, file));
-        TelegramManager.getInstance().sendTextMessage("🔊 Intro " + file.displayName);
+        TelegramManager.getInstance().sendTextMessage("🔊 " + file.displayName);
         
         // Silent mode: log and notify, but skip audio playback and move to next intro file
         if (SettingsManager.isSilentMode(this)) {
@@ -758,7 +771,7 @@ public class VadService extends Service {
         DebugLogger.log("playReminder: " + file.displayName);
         
         EventRepository.getInstance().addEvent(new LogEvent(LogEvent.Type.REMINDER, file));
-        TelegramManager.getInstance().sendTextMessage("🔊 Reminder " + file.displayName);
+        TelegramManager.getInstance().sendTextMessage("🔊 " + file.displayName);
         
         isPaused = true;
         isProcessingResponse = true;
@@ -827,7 +840,7 @@ public class VadService extends Service {
         DebugLogger.log("playRepeatReminder: " + fileToPlay.displayName + " (index=" + repeatReminderIndex + ")");
 
         EventRepository.getInstance().addEvent(new LogEvent(LogEvent.Type.REMINDER, fileToPlay));
-        TelegramManager.getInstance().sendTextMessage("🔊 Reminder " + fileToPlay.displayName);
+        TelegramManager.getInstance().sendTextMessage("🔊 " + fileToPlay.displayName);
 
         isPaused = true;
         isProcessingResponse = true;
