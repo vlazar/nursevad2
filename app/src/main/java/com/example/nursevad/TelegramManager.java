@@ -1,5 +1,10 @@
 package com.example.nursevad;
 
+import com.pengrad.telegrambot.request.GetUpdates;
+import com.pengrad.telegrambot.response.GetUpdatesResponse;
+import okhttp3.OkHttpClient;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
 import android.Manifest;
 import android.content.Context;
 import android.content.Intent;
@@ -39,6 +44,10 @@ public class TelegramManager {
     private boolean isRunning = false;
     private Context appContext;
 
+    private Thread pollingThread;
+    private volatile boolean pollingStopped = true;
+    private volatile int updateOffset = 0;
+
     public static synchronized TelegramManager getInstance() {
         if (instance == null) instance = new TelegramManager();
         return instance;
@@ -53,30 +62,26 @@ public class TelegramManager {
         boolean hasGroup = SettingsManager.getGroupChatIdLong(appContext) != null;
 
         if (token == null || token.isEmpty() || (initialIds.isEmpty() && !hasGroup)) {
-            Log.d("TelegramManager", "Bot not started: Missing token or no allowed users/group.");
+            Log.d("TelegramManager", "Bot not started: Missing token or user IDs/group.");
             return;
         }
 
         try {
-            bot = new TelegramBot(token);
+            // Custom client: read timeout MUST exceed the long-poll timeout (30s),
+            // and a higher per-host limit keeps async sends (audio uploads) from
+            // starving each other. Polling itself is synchronous → bypasses dispatcher.
+            OkHttpClient client = new OkHttpClient.Builder()
+                    .connectTimeout(15, TimeUnit.SECONDS)
+                    .readTimeout(40, TimeUnit.SECONDS)
+                    .writeTimeout(30, TimeUnit.SECONDS)
+                    .build();
+            client.dispatcher().setMaxRequests(64);
+            client.dispatcher().setMaxRequestsPerHost(32);
+
+            bot = new TelegramBot.Builder(token).okHttpClient(client).build();
             isRunning = true;
 
-            bot.setUpdatesListener(updates -> {
-                for (Update update : updates) {
-                    try {
-                        if (update.message() != null) {
-                            handleMessage(update.message());
-                        } else if (update.callbackQuery() != null) {
-                            handleCallback(update.callbackQuery());
-                        }
-                    } catch (Exception ex) {
-                        Log.e("TelegramManager", "Error processing update", ex);
-                    }
-                }
-                return UpdatesListener.CONFIRMED_UPDATES_ALL;
-            }, e -> {
-                Log.e("TelegramManager", "Telegram Bot Error: " + e.getMessage());
-            });
+            startPolling();
 
         } catch (Throwable t) {
             Log.e("TelegramManager", "Fatal error starting Telegram Bot", t);
@@ -84,7 +89,60 @@ public class TelegramManager {
         }
     }
 
+    private void startPolling() {
+        pollingStopped = false;
+        pollingThread = new Thread(() -> {
+            DebugLogger.log("Long polling thread started (timeout=30s)");
+            while (!pollingStopped) {
+                try {
+                    GetUpdates request = new GetUpdates()
+                            .offset(updateOffset)
+                            .timeout(30); // server holds the connection up to 30s
+                    GetUpdatesResponse response = bot.execute(request); // synchronous
+
+                    if (response == null || !response.isOk()) {
+                        DebugLogger.log("Long polling: bad response: " +
+                                (response != null ? response.description() : "null"));
+                        Thread.sleep(3000);
+                        continue;
+                    }
+
+                    List<Update> updates = response.updates();
+                    if (updates != null && !updates.isEmpty()) {
+                        for (Update update : updates) {
+                            updateOffset = update.updateId() + 1;
+                            try {
+                                if (update.message() != null) {
+                                    handleMessage(update.message());
+                                } else if (update.callbackQuery() != null) {
+                                    handleCallback(update.callbackQuery());
+                                }
+                            } catch (Exception ex) {
+                                Log.e("TelegramManager", "Error processing update", ex);
+                            }
+                        }
+                    }
+                } catch (InterruptedException ie) {
+                    break;
+                } catch (Exception e) {
+                    Log.e("TelegramManager", "Long polling error", e);
+                    if (!pollingStopped) {
+                        try { Thread.sleep(2000); } catch (InterruptedException ie) { break; }
+                    }
+                }
+            }
+            DebugLogger.log("Long polling thread stopped");
+        }, "TelegramLongPoll");
+        pollingThread.setDaemon(true);
+        pollingThread.start();
+    }
+
     public void stop() {
+        pollingStopped = true;
+        if (pollingThread != null) {
+            pollingThread.interrupt();
+            pollingThread = null;
+        }
         if (bot != null) {
             bot.shutdown();
             bot = null;

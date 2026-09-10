@@ -36,4 +36,5 @@ dependencies {
     implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.16.3'
     implementation 'com.github.pengrad:java-telegram-bot-api:7.1.0'
     implementation 'androidx.security:security-crypto:1.1.0-alpha06'
+    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
 }
