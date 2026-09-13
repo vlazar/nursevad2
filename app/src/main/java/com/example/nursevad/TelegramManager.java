@@ -267,7 +267,11 @@ public class TelegramManager {
                 senderName = message.from().username();
             }
 
-            broadcastMessage("🎤 " + label + " from " + senderName);
+            // Telegram confirmation messages disabled (kept in code for future re-enable):
+            // broadcastMessage("🎤 Voice Message from " + senderName);
+            // broadcastMessage("🎤 Audio from " + senderName);
+            // (original combined form, commented out:)
+            // broadcastMessage("🎤 " + label + " from " + senderName);
             downloadAndQueueVoice(fileId, senderName, isAudio, ext);
             return;
         }
