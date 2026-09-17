@@ -288,50 +288,6 @@ public class VadService extends Service {
             DebugLogger.log("Reminder timer RESUMED (fresh schedule).");
         }
     }
-
-     private void scheduleReminder() {
-        if (reminderFiles == null || reminderFiles.isEmpty()) return;
-        if (reminderRunnable != null) handler.removeCallbacks(reminderRunnable);
-
-        int trigger = SettingsManager.getReminderTrigger(this);
-        if (trigger == 0) {
-            int min = SettingsManager.getReminderStartMin(this);
-            int max = SettingsManager.getReminderStartMax(this);
-            if (min > max) { int t = min; min = max; max = t; }
-            int steps = (max - min) / 5;
-            int randomSteps = steps > 0 ? new Random().nextInt(steps + 1) : 0;
-            long delayMs = (min + randomSteps * 5) * 60000L;
-
-            reminderRunnable = () -> {
-                DebugLogger.log("Reminder Timer FIRED (Trigger=Start). Arming reminder.");
-                isReminderArmed = true;
-            };
-            reminderScheduledAt = SystemClock.elapsedRealtime();
-            reminderTotalDelayMs = delayMs;
-            handler.postDelayed(reminderRunnable, delayMs);
-            DebugLogger.log("scheduleReminder called. Delay=" + delayMs + "ms");
-            return;
-        }
-
-        int min = SettingsManager.getReminderSpeechMin(this);
-        int max = SettingsManager.getReminderSpeechMax(this);
-        if (min > max) { int t = min; min = max; max = t; }
-        int steps = (max - min) / 5;
-        int randomSteps = steps > 0 ? new Random().nextInt(steps + 1) : 0;
-        scheduleReminderWithDelay((min + randomSteps * 5) * 1000L);
-    }
-
-    private void scheduleReminderWithDelay(long delayMs) {
-        if (reminderRunnable != null) handler.removeCallbacks(reminderRunnable);
-        reminderRunnable = () -> {
-            DebugLogger.log("Reminder Timer FIRED (Trigger=Speech/Recurring). Playing reminder.");
-            playReminder();
-        };
-        reminderScheduledAt = SystemClock.elapsedRealtime();
-        reminderTotalDelayMs = delayMs;
-        handler.postDelayed(reminderRunnable, delayMs);
-        DebugLogger.log("scheduleReminder called. Delay=" + delayMs + "ms");
-    }
     
     private void startRecording() {
         try {
@@ -763,42 +719,46 @@ public class VadService extends Service {
 
     private void scheduleReminder() {
         if (reminderFiles == null || reminderFiles.isEmpty()) return;
-        
-        if (reminderRunnable != null) {
-            handler.removeCallbacks(reminderRunnable);
-        }
-        
+        if (reminderRunnable != null) handler.removeCallbacks(reminderRunnable);
+
         int trigger = SettingsManager.getReminderTrigger(this);
-        long delayMs;
         if (trigger == 0) {
             int min = SettingsManager.getReminderStartMin(this);
             int max = SettingsManager.getReminderStartMax(this);
             if (min > max) { int t = min; min = max; max = t; }
             int steps = (max - min) / 5;
             int randomSteps = steps > 0 ? new Random().nextInt(steps + 1) : 0;
-            int randomMins = min + (randomSteps * 5);
-            delayMs = randomMins * 60000L;
-            
+            long delayMs = (min + randomSteps * 5) * 60000L;
+
             reminderRunnable = () -> {
                 DebugLogger.log("Reminder Timer FIRED (Trigger=Start). Arming reminder.");
                 isReminderArmed = true;
             };
-        } else {
-            int min = SettingsManager.getReminderSpeechMin(this);
-            int max = SettingsManager.getReminderSpeechMax(this);
-            if (min > max) { int t = min; min = max; max = t; }
-            int steps = (max - min) / 5;
-            int randomSteps = steps > 0 ? new Random().nextInt(steps + 1) : 0;
-            int randomSecs = min + (randomSteps * 5);
-            delayMs = randomSecs * 1000L;
-            
-            reminderRunnable = () -> {
-                DebugLogger.log("Reminder Timer FIRED (Trigger=Speech/Recurring). Playing reminder.");
-                playReminder();
-            };
+            reminderScheduledAt = SystemClock.elapsedRealtime();
+            reminderTotalDelayMs = delayMs;
+            handler.postDelayed(reminderRunnable, delayMs);
+            DebugLogger.log("scheduleReminder called. Delay=" + delayMs + "ms");
+            return;
         }
-        DebugLogger.log("scheduleReminder called. Delay=" + delayMs + "ms");
+
+        int min = SettingsManager.getReminderSpeechMin(this);
+        int max = SettingsManager.getReminderSpeechMax(this);
+        if (min > max) { int t = min; min = max; max = t; }
+        int steps = (max - min) / 5;
+        int randomSteps = steps > 0 ? new Random().nextInt(steps + 1) : 0;
+        scheduleReminderWithDelay((min + randomSteps * 5) * 1000L);
+    }
+
+    private void scheduleReminderWithDelay(long delayMs) {
+        if (reminderRunnable != null) handler.removeCallbacks(reminderRunnable);
+        reminderRunnable = () -> {
+            DebugLogger.log("Reminder Timer FIRED (Trigger=Speech/Recurring). Playing reminder.");
+            playReminder();
+        };
+        reminderScheduledAt = SystemClock.elapsedRealtime();
+        reminderTotalDelayMs = delayMs;
         handler.postDelayed(reminderRunnable, delayMs);
+        DebugLogger.log("scheduleReminder called. Delay=" + delayMs + "ms");
     }
 
     private void scheduleResponseCheck() {
