@@ -472,16 +472,20 @@ public class VadService extends Service {
             }
 
             if (isPoi) {
-                // ─── POI: postpone reminder, cancel any pending repeat-response-check ───
-                if (SettingsManager.getReminderTrigger(this) == 1) {
-                    if (responseCheckRunnable != null) {
-                        handler.removeCallbacks(responseCheckRunnable);
-                        responseCheckRunnable = null;
-                        waitingForResponseAfterReminder = false;
-                        DebugLogger.log("POI event: cancelled pending response-check timer.");
-                    }
-                    resumeReminderTimer();
+                // ─── POI responded: fully reset the repeat-reminder sequence ───
+                // Any POI speech event after a Repeat file was played must restart
+                // the sequence from the FIRST file in Reminder/Repeat next time.
+                if (repeatReminderIndex != 0 || userDidNotRespondToReminder || waitingForResponseAfterReminder) {
+                    DebugLogger.log("POI speech event: resetting Repeat sequence (index was "
+                            + repeatReminderIndex + ", unanswered=" + userDidNotRespondToReminder + ").");
                 }
+                repeatReminderIndex = 0;
+                userDidNotRespondToReminder = false;
+                if (responseCheckRunnable != null) {
+                    handler.removeCallbacks(responseCheckRunnable);
+                    responseCheckRunnable = null;
+                }
+                waitingForResponseAfterReminder = false;
 
                 boolean playedSomething = false;
                 if (SettingsManager.getReminderTrigger(this) == 0) {
@@ -491,6 +495,8 @@ public class VadService extends Service {
                         scheduleReminder();
                         playedSomething = true;
                     }
+                } else if (SettingsManager.getReminderTrigger(this) == 1) {
+                    resumeReminderTimer();
                 }
 
                 if (!playedSomething && finalFile != null) {
