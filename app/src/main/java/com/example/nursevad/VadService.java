@@ -74,6 +74,11 @@ public class VadService extends Service {
     private long reminderScheduledAt = 0;
     private long reminderTotalDelayMs = 0;
 
+    private long pausedRemainingMs = -1;
+    private boolean pausedWasResponseCheck = false;
+    private long responseCheckScheduledAt = 0;
+    private long responseCheckTotalDelayMs = 0;
+
     // Repeat Reminder fields
     private List<AudioFile> repeatReminderFiles = new ArrayList<>();
     private boolean userDidNotRespondToReminder = false;
@@ -219,6 +224,8 @@ public class VadService extends Service {
             EventRepository.getInstance().addEvent(new LogEvent(LogEvent.Type.START));
 
             isReminderArmed = false;
+            pausedRemainingMs = -1;
+            pausedWasResponseCheck = false;            
             introQueue.clear();
             if (introFiles != null && !introFiles.isEmpty()) {
                 introQueue.addAll(introFiles);
@@ -247,31 +254,80 @@ public class VadService extends Service {
 
     // --- Helper Methods for Reminder Timer Pause/Resume ---
     private void pauseReminderTimer() {
-        if (SettingsManager.getReminderTrigger(this) == 1 && reminderRunnable != null) {
+        if (SettingsManager.getReminderTrigger(this) != 1) return;
+        long now = SystemClock.elapsedRealtime();
+        if (responseCheckRunnable != null) {
+            pausedRemainingMs = Math.max(0, (responseCheckScheduledAt + responseCheckTotalDelayMs) - now);
+            pausedWasResponseCheck = true;
+            handler.removeCallbacks(responseCheckRunnable);
+            responseCheckRunnable = null;
+            DebugLogger.log("Reminder response-check PAUSED, remaining=" + pausedRemainingMs + "ms");
+        } else if (reminderRunnable != null) {
+            pausedRemainingMs = Math.max(0, (reminderScheduledAt + reminderTotalDelayMs) - now);
+            pausedWasResponseCheck = false;
             handler.removeCallbacks(reminderRunnable);
-            DebugLogger.log("Reminder timer PAUSED (Trigger=1).");
+            reminderRunnable = null;
+            DebugLogger.log("Reminder timer PAUSED, remaining=" + pausedRemainingMs + "ms");
         }
     }
 
     private void resumeReminderTimer() {
-        if (SettingsManager.getReminderTrigger(this) == 1 && isRunning) {
+        if (SettingsManager.getReminderTrigger(this) != 1) return;
+        if (pausedRemainingMs >= 0) {
+            long delay = pausedRemainingMs;
+            boolean wasResponseCheck = pausedWasResponseCheck;
+            pausedRemainingMs = -1;
+            if (wasResponseCheck) scheduleResponseCheckWithDelay(delay);
+            else scheduleReminderWithDelay(delay);
+            DebugLogger.log("Reminder timer RESUMED with remaining=" + delay + "ms");
+        } else {
             scheduleReminder();
-            DebugLogger.log("Reminder timer RESUMED (Trigger=1).");
+            DebugLogger.log("Reminder timer RESUMED (fresh schedule).");
         }
     }
 
-    private void resumeReminderTimerWithRemaining() {
-        if (SettingsManager.getReminderTrigger(this) == 1 && isRunning) {
-            long elapsed = SystemClock.elapsedRealtime() - reminderScheduledAt;
-            long remaining = reminderTotalDelayMs - elapsed;
-            if (remaining > 0) {
-                DebugLogger.log("Reminder timer resumed with remaining=" + remaining + "ms (PONI, no reset)");
-                handler.postDelayed(reminderRunnable, remaining);
-            } else {
-                DebugLogger.log("Reminder timer already expired during PONI speech. Playing now.");
-                playReminder();
-            }
+     private void scheduleReminder() {
+        if (reminderFiles == null || reminderFiles.isEmpty()) return;
+        if (reminderRunnable != null) handler.removeCallbacks(reminderRunnable);
+
+        int trigger = SettingsManager.getReminderTrigger(this);
+        if (trigger == 0) {
+            int min = SettingsManager.getReminderStartMin(this);
+            int max = SettingsManager.getReminderStartMax(this);
+            if (min > max) { int t = min; min = max; max = t; }
+            int steps = (max - min) / 5;
+            int randomSteps = steps > 0 ? new Random().nextInt(steps + 1) : 0;
+            long delayMs = (min + randomSteps * 5) * 60000L;
+
+            reminderRunnable = () -> {
+                DebugLogger.log("Reminder Timer FIRED (Trigger=Start). Arming reminder.");
+                isReminderArmed = true;
+            };
+            reminderScheduledAt = SystemClock.elapsedRealtime();
+            reminderTotalDelayMs = delayMs;
+            handler.postDelayed(reminderRunnable, delayMs);
+            DebugLogger.log("scheduleReminder called. Delay=" + delayMs + "ms");
+            return;
         }
+
+        int min = SettingsManager.getReminderSpeechMin(this);
+        int max = SettingsManager.getReminderSpeechMax(this);
+        if (min > max) { int t = min; min = max; max = t; }
+        int steps = (max - min) / 5;
+        int randomSteps = steps > 0 ? new Random().nextInt(steps + 1) : 0;
+        scheduleReminderWithDelay((min + randomSteps * 5) * 1000L);
+    }
+
+    private void scheduleReminderWithDelay(long delayMs) {
+        if (reminderRunnable != null) handler.removeCallbacks(reminderRunnable);
+        reminderRunnable = () -> {
+            DebugLogger.log("Reminder Timer FIRED (Trigger=Speech/Recurring). Playing reminder.");
+            playReminder();
+        };
+        reminderScheduledAt = SystemClock.elapsedRealtime();
+        reminderTotalDelayMs = delayMs;
+        handler.postDelayed(reminderRunnable, delayMs);
+        DebugLogger.log("scheduleReminder called. Delay=" + delayMs + "ms");
     }
     
     private void startRecording() {
@@ -427,8 +483,7 @@ public class VadService extends Service {
                     playNextTelegramVoice();
                 } else {
                     EventBus.getInstance().postStatus("Listening...");
-                    // NOTE: Do NOT call resumeReminderTimer() here.
-                    // A too-short event is neither POI nor PONI — leave timer untouched.
+                    resumeReminderTimer();   // short speech: resume with remaining time
                 }
                 return;
             }
@@ -496,7 +551,9 @@ public class VadService extends Service {
                         playedSomething = true;
                     }
                 } else if (SettingsManager.getReminderTrigger(this) == 1) {
-                    resumeReminderTimer();
+                    pausedRemainingMs = -1;          // POI = real response → brand-new delay
+                    scheduleReminder();
+                    DebugLogger.log("POI speech: reminder timer reset with fresh delay.");
                 }
 
                 if (!playedSomething && finalFile != null) {
@@ -532,7 +589,7 @@ public class VadService extends Service {
                     playNextTelegramVoice();
                 } else {
                     EventBus.getInstance().postStatus("Listening...");
-                    // NO resumeReminderTimer() here — PONI is invisible to reminders.
+                    resumeReminderTimer();   // PONI: resume with remaining time (invisible)
                 }
             }
         };
@@ -745,20 +802,22 @@ public class VadService extends Service {
         if (min > max) { int t = min; min = max; max = t; }
         int steps = (max - min) / 5;
         int randomSteps = steps > 0 ? new Random().nextInt(steps + 1) : 0;
-        int randomSecs = min + (randomSteps * 5);
-        long delayMs = randomSecs * 1000L;
-        
+        scheduleResponseCheckWithDelay((min + randomSteps * 5) * 1000L);
+    }
+
+    private void scheduleResponseCheckWithDelay(long delayMs) {
+        if (responseCheckRunnable != null) handler.removeCallbacks(responseCheckRunnable);
         waitingForResponseAfterReminder = true;
-        
         responseCheckRunnable = () -> {
             DebugLogger.log("Response check timer FIRED. User did not respond to reminder.");
             waitingForResponseAfterReminder = false;
             userDidNotRespondToReminder = true;
             playRepeatReminder();
         };
-        
-        DebugLogger.log("scheduleResponseCheck called. Delay=" + delayMs + "ms");
+        responseCheckScheduledAt = SystemClock.elapsedRealtime();
+        responseCheckTotalDelayMs = delayMs;
         handler.postDelayed(responseCheckRunnable, delayMs);
+        DebugLogger.log("scheduleResponseCheck called. Delay=" + delayMs + "ms");
     }
 
     private void playReminder() {
@@ -1093,6 +1152,8 @@ public class VadService extends Service {
         DebugLogger.log("Service onDestroy");
         isRunning = false;
         isVadListening = false;
+        pausedRemainingMs = -1;
+        pausedWasResponseCheck = false;
         EventBus.getInstance().postVadRunning(false); 
         
         handler.removeCallbacksAndMessages(null);
