@@ -41,6 +41,9 @@ public class VadService extends Service {
     private int frameCount = 0;
     private int silenceFrames = 0;
 
+    private static final int START_CONFIRM_FRAMES = 4; // ~128 ms of sustained prob > 0.5
+    private int speechConfirmFrames = 0;
+
     private FileOutputStream fos;
     private File recordedFile;
 
@@ -367,6 +370,8 @@ public class VadService extends Service {
     }
 
     private void processAudio(short[] chunk) {
+        if (isProcessingResponse) speechConfirmFrames = 0;
+
         double sum = 0;
         for (short s : chunk) sum += s * s;
         double meanSquare = sum / chunk.length;
@@ -389,30 +394,43 @@ public class VadService extends Service {
         EventBus.getInstance().postDebug("Vol: " + percent + "% | VAD Prob: " + probStr);
 
         if (prob > 0.5 && !isSpeaking && !isProcessingResponse) {
-            DebugLogger.log("Speech START detected. prob=" + prob);
-            isSpeaking = true;
-            speechEnded = false;
-            speechStartMs = SystemClock.elapsedRealtime();
-            accumulatedRms = 0; frameCount = 0; silenceFrames = 0;
-            
-            pauseReminderTimer();
-            
-            try {
-                recordedFile = new File(getCacheDir(), "speech_" + speechStartMs + ".wav");
-                fos = new FileOutputStream(recordedFile);
-                writeWavHeader(fos, 16000, 1, 16);
-            } catch (Exception e) {}
+            // ── Speech onset with confirmation debounce ──
+            // A 1–4 frame probability blip (e.g. prob=0.56) must NOT start a speech
+            // event, pause the reminder timer, or open a recording.
+            if (!isSpeaking && !isProcessingResponse) {
+                if (prob > 0.5) {
+                    speechConfirmFrames++;
+                    if (speechConfirmFrames >= START_CONFIRM_FRAMES) {
+                        speechConfirmFrames = 0;
+                        DebugLogger.log("Speech START confirmed after " + START_CONFIRM_FRAMES + " frames. prob=" + prob);
+                        isSpeaking = true;
+                        speechEnded = false;
+                        speechStartMs = SystemClock.elapsedRealtime();
+                        accumulatedRms = 0; frameCount = 0; silenceFrames = 0;
 
-            boolean waitForEnd = SettingsManager.getWaitForEnd(this);
-            int delaySec = SettingsManager.getDelay(this);
-            
-            if (!waitForEnd) {
-                isProcessingResponse = true;
-                speechDelayRunnable = () -> triggerResponse();
-                if (delaySec > 0) {
-                    handler.postDelayed(speechDelayRunnable, delaySec * 1000L);
+                        pauseReminderTimer();
+
+                        try {
+                            recordedFile = new File(getCacheDir(), "speech_" + speechStartMs + ".wav");
+                            fos = new FileOutputStream(recordedFile);
+                            writeWavHeader(fos, 16000, 1, 16);
+                        } catch (Exception e) {}
+
+                        boolean waitForEnd = SettingsManager.getWaitForEnd(this);
+                        int delaySec = SettingsManager.getDelay(this);
+
+                        if (!waitForEnd) {
+                            isProcessingResponse = true;
+                            speechDelayRunnable = () -> triggerResponse();
+                            if (delaySec > 0) {
+                                handler.postDelayed(speechDelayRunnable, delaySec * 1000L);
+                            } else {
+                                handler.post(speechDelayRunnable);
+                            }
+                        }
+                    }
                 } else {
-                    handler.post(speechDelayRunnable);
+                    speechConfirmFrames = 0;
                 }
             }
         }
@@ -436,6 +454,7 @@ public class VadService extends Service {
                 DebugLogger.log("Speech END detected. silenceFrames=" + silenceFrames);
                 speechEnded = true;
                 isSpeaking = false;
+                speechConfirmFrames = 0;
                 
                 if (fos != null) {
                     try {
