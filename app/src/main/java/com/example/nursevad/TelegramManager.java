@@ -74,6 +74,7 @@ public class TelegramManager {
                     .connectTimeout(15, TimeUnit.SECONDS)
                     .readTimeout(40, TimeUnit.SECONDS)
                     .writeTimeout(30, TimeUnit.SECONDS)
+                    .addInterceptor(new TelegramApiLogger()) // <-- ADD THIS LINE
                     .build();
             client.dispatcher().setMaxRequests(64);
             client.dispatcher().setMaxRequestsPerHost(32);
@@ -101,8 +102,17 @@ public class TelegramManager {
                     GetUpdatesResponse response = bot.execute(request); // synchronous
 
                     if (response == null || !response.isOk()) {
-                        DebugLogger.log("Long polling: bad response: " +
-                                (response != null ? response.description() : "null"));
+                        int code = response != null ? response.errorCode() : 0;
+                        String desc = response != null ? response.description() : "null";
+                        
+                        DebugLogger.log("Long polling: bad response. Code=" + code + ", Desc=" + desc);
+                        
+                        if (code == 404) {
+                            DebugLogger.log("!!! CRITICAL: Telegram API returned 404 Not Found. This is NOT a Flood Wait. It usually means your Bot Token is invalid, the bot was deleted, or the token was revoked in BotFather. !!!");
+                        } else if (code == 429) {
+                            DebugLogger.log("!!! FLOOD WAIT DETECTED: Telegram API returned 429. Parameters: " + (response.parameters() != null ? response.parameters().toString() : "null") + " !!!");
+                        }
+                        
                         Thread.sleep(3000);
                         continue;
                     }
@@ -718,6 +728,68 @@ public class TelegramManager {
         if (!isRunning || bot == null) return;
         for (Long chatId : getBroadcastTargets()) {
             sendToChat(chatId, text);
+        }
+    }
+
+    // --- Detailed Telegram API Logger ---
+    private static class TelegramApiLogger implements okhttp3.Interceptor {
+        @Override
+        public okhttp3.Response intercept(Chain chain) throws java.io.IOException {
+            okhttp3.Request request = chain.request();
+            
+            // 1. Log Request
+            StringBuilder reqLog = new StringBuilder();
+            // Redact bot token from URL for security
+            String urlStr = request.url().toString().replaceAll("(api\\.telegram\\.org/bot)[^/]+", "$1****");
+            reqLog.append("TG API REQ -> ").append(request.method()).append(" ").append(urlStr).append("\n");
+            reqLog.append("Headers: ").append(request.headers()).append("\n");
+            
+            okhttp3.RequestBody body = request.body();
+            if (body != null) {
+                try {
+                    okio.Buffer buffer = new okio.Buffer();
+                    body.writeTo(buffer);
+                    String bodyStr = buffer.readString(java.nio.charset.StandardCharsets.UTF_8);
+                    if (bodyStr.length() > 3000) bodyStr = bodyStr.substring(0, 3000) + "...[TRUNCATED]";
+                    reqLog.append("Body: ").append(bodyStr);
+                } catch (Exception e) {
+                    reqLog.append("Body: [Failed to read]");
+                }
+            }
+            DebugLogger.log(reqLog.toString());
+
+            // 2. Execute Request
+            long t1 = System.nanoTime();
+            okhttp3.Response response;
+            try {
+                response = chain.proceed(request);
+            } catch (Exception e) {
+                DebugLogger.log("TG API EXCEPTION -> " + e.getMessage());
+                throw e;
+            }
+            long t2 = System.nanoTime();
+
+            // 3. Log Response
+            StringBuilder respLog = new StringBuilder();
+            respLog.append("TG API RESP <- ").append(response.code()).append(" ")
+                   .append(response.message()).append(" (").append((t2 - t1) / 1e6).append(" ms)\n");
+            respLog.append("Headers: ").append(response.headers()).append("\n");
+            
+            if (response.body() != null) {
+                try {
+                    okio.BufferedSource source = response.body().source();
+                    source.request(Long.MAX_VALUE); // Buffer the entire body
+                    okio.Buffer buffer = source.getBuffer();
+                    String bodyStr = buffer.clone().readString(java.nio.charset.StandardCharsets.UTF_8);
+                    if (bodyStr.length() > 5000) bodyStr = bodyStr.substring(0, 5000) + "...[TRUNCATED]";
+                    respLog.append("Body: ").append(bodyStr);
+                } catch (Exception e) {
+                    respLog.append("Body: [Failed to read]");
+                }
+            }
+            DebugLogger.log(respLog.toString());
+
+            return response;
         }
     }
 }
