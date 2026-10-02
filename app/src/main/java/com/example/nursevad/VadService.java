@@ -101,6 +101,15 @@ public class VadService extends Service {
         context.startService(i);
     }
 
+    /** Directory for all saved audio files: <external files>/audio (same place as log.txt). */
+    public static File getAudioDir(Context context) {
+        File base = context.getExternalFilesDir(null);
+        if (base == null) base = context.getCacheDir();   // safety fallback
+        File dir = new File(base, "audio");
+        if (!dir.exists()) dir.mkdirs();
+        return dir;
+    }
+
     @Override
     public void onCreate() {
         super.onCreate();
@@ -367,7 +376,7 @@ public class VadService extends Service {
                         pauseReminderTimer();
 
                         try {
-                            recordedFile = new File(getCacheDir(), "speech_" + speechStartMs + ".wav");
+                            recordedFile = new File(getAudioDir(this), "speech_" + speechStartMs + ".wav");
                             fos = new FileOutputStream(recordedFile);
                             writeWavHeader(fos, 16000, 1, 16);
                         } catch (Exception e) {}
