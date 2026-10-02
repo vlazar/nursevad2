@@ -491,30 +491,14 @@ public class VadService extends Service {
                 isPoi = SpeakerVerifier.getInstance(this).verify(recordedFile);
             }
 
-            // ─── Transcode WAV → Opus 32 kbps VBR before saving/uploading ───
-            File mediaFile = finalRecordedFile;
-            String mediaUri = finalRecordedUri;
-            if (finalRecordedFile != null && finalRecordedFile.exists()) {
-                File opus = OpusTranscoder.transcode(VadService.this, finalRecordedFile, 32);
-                if (opus != null) {
-                    finalRecordedFile.delete();          // WAV was only a temporary PCM source
-                    mediaFile = opus;
-                    mediaUri = Uri.fromFile(opus).toString();
-                } else {
-                    DebugLogger.log("Keeping WAV fallback (transcode failed).");
-                }
-            }
-            final File uploadFile = mediaFile;
-            final String uploadUri = mediaUri;
-
-            LogEvent event = new LogEvent(LogEvent.Type.SPEECH, finalLevel, finalFile, uploadUri);
+            LogEvent event = new LogEvent(LogEvent.Type.SPEECH, finalLevel, finalFile, finalRecordedUri);
             event.isPoni = !isPoi;
 
             EventRepository.getInstance().addEvent(event);
 
-            if (uploadFile != null && uploadFile.exists()) {
+            if (finalRecordedFile != null && finalRecordedFile.exists()) {
                 String responseName = (finalFile != null) ? finalFile.displayName : null;
-                TelegramManager.getInstance().sendAudioEvent(uploadUri, finalLevel, responseName, !isPoi);
+                TelegramManager.getInstance().sendAudioEvent(Uri.fromFile(finalRecordedFile).toString(), finalLevel, responseName, !isPoi);
             }
 
             if (isPoi) {
@@ -1046,8 +1030,7 @@ public class VadService extends Service {
     private void cleanupOldWavFiles() {
         try {
             File cacheDir = getCacheDir();
-            File[] wavFiles = cacheDir.listFiles((dir, name) ->
-                    name.startsWith("speech_") && (name.endsWith(".wav") || name.endsWith(".opus")));
+            File[] wavFiles = cacheDir.listFiles((dir, name) -> name.startsWith("speech_") && name.endsWith(".wav"));
             if (wavFiles == null || wavFiles.length <= 20) return;
             
             // Sort by last modified time (oldest first)
