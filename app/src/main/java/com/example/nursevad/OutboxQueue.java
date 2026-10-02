@@ -3,6 +3,8 @@ package com.example.nursevad;
 import android.content.Context;
 
 import org.json.JSONObject;
+import org.json.JSONException;
+import org.json.JSONObject;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -91,7 +93,7 @@ public class OutboxQueue {
         DebugLogger.log("Outbox loaded from disk: interactive=" + interactive.size() + " bulk=" + bulk.size());
     }
 
-    private JSONObject toJson(Item it) {
+    private JSONObject toJson(Item it) throws JSONException {
         JSONObject o = new JSONObject();
         o.put("seq", it.seq);
         o.put("lane", it.lane == Lane.INTERACTIVE ? 0 : 1);
