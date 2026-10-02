@@ -1,7 +1,6 @@
 package com.example.nursevad;
 
 import android.content.Context;
-
 import org.json.JSONObject;
 
 import java.io.File;
@@ -12,6 +11,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -19,8 +19,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * Persistent FIFO outbox with two priority lanes (INTERACTIVE jumps ahead of BULK),
  * per-chat rate limiting (<=54 msg/min private, <=18 msg/min groups) and a global
  * pause driven by Telegram 429 retry_after.
- * Metadata is persisted as one small JSON file per queued item in <files>/tg_outbox,
- * so unsent messages survive crashes and reboots.
+ * Metadata is persisted as one small JSON file per queued item in <files>/tg_outbox.
  */
 public class OutboxQueue {
 
@@ -29,7 +28,7 @@ public class OutboxQueue {
     public static class Item {
         public long seq;
         public Lane lane;
-        public String type;      // TEXT | TEXT_RAW_MENU | AUDIO | EDIT_TEXT | EDIT_MAIN | EDIT_SETTINGS
+        public String type;      // TEXT | AUDIO | EDIT_TEXT | EDIT_MAIN | EDIT_SETTINGS
         public long chatId;
         public int messageId;
         public String text;
@@ -38,11 +37,11 @@ public class OutboxQueue {
         public String title;
         public String performer;
         public int attempts;
-        public File file;        // backing metadata file on disk
+        public File file;        // backing metadata file
     }
 
     public interface SendCallback {
-        /** @return 0 = sent ok; 429 = flood (fill retryAfterSec[0]); -1 = transient; -2 = permanent fail */
+        /** @return 0 ok | 429 flood (fill retryAfterSec[0]) | -1 transient | -2 permanent drop */
         int send(Item item, int[] retryAfterSec);
     }
 
@@ -110,7 +109,7 @@ public class OutboxQueue {
         Item it = new Item();
         it.seq = o.optLong("seq");
         it.lane = o.optInt("lane") == 0 ? Lane.INTERACTIVE : Lane.BULK;
-        it.type = o.optString("type", "TEXT");
+        it.type = o.optString("type");
         it.chatId = o.optLong("chatId");
         it.messageId = o.optInt("messageId");
         it.text = o.optString("text", null);
@@ -128,17 +127,11 @@ public class OutboxQueue {
         if (dir == null) return;
         Item it = new Item();
         it.seq = seqGen.getAndIncrement();
-        it.lane = lane;
-        it.type = type;
-        it.chatId = chatId;
-        it.messageId = messageId;
-        it.text = text;
-        it.filePath = filePath;
-        it.caption = caption;
-        it.title = title;
-        it.performer = performer;
+        it.lane = lane; it.type = type; it.chatId = chatId; it.messageId = messageId;
+        it.text = text; it.filePath = filePath; it.caption = caption;
+        it.title = title; it.performer = performer;
 
-        File f = new File(dir, String.format(java.util.Locale.US, "%013d_%d.json",
+        File f = new File(dir, String.format(Locale.US, "%013d_%d.json",
                 it.seq, lane == Lane.INTERACTIVE ? 0 : 1));
         try (Writer w = new OutputStreamWriter(new FileOutputStream(f), StandardCharsets.UTF_8)) {
             w.write(toJson(it).toString());
@@ -239,8 +232,7 @@ public class OutboxQueue {
                     } else {
                         Thread.sleep(1500);
                     }
-                } else { // -2 permanent (400/403/404 ...) — details are in log_errors.txt
-                    DebugLogger.log("Outbox: permanent failure, dropping seq=" + item.seq + " type=" + item.type);
+                } else { // -2 permanent (400/403/404 ...) — already in log_errors.txt
                     dropHead(item);
                 }
             } catch (InterruptedException ie) {
