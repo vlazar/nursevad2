@@ -1,10 +1,5 @@
 package com.example.nursevad;
 
-import com.pengrad.telegrambot.request.GetUpdates;
-import com.pengrad.telegrambot.response.GetUpdatesResponse;
-import okhttp3.OkHttpClient;
-import java.util.List;
-import java.util.concurrent.TimeUnit;
 import android.Manifest;
 import android.content.Context;
 import android.content.Intent;
@@ -14,20 +9,21 @@ import android.os.Looper;
 import android.util.Log;
 import androidx.core.content.ContextCompat;
 import com.pengrad.telegrambot.TelegramBot;
-import com.pengrad.telegrambot.UpdatesListener;
 import com.pengrad.telegrambot.model.CallbackQuery;
 import com.pengrad.telegrambot.model.Message;
 import com.pengrad.telegrambot.model.Update;
 import com.pengrad.telegrambot.request.EditMessageText;
+import com.pengrad.telegrambot.request.GetUpdates;
 import com.pengrad.telegrambot.request.SendAudio;
 import com.pengrad.telegrambot.request.SendMessage;
-import com.pengrad.telegrambot.request.AnswerCallbackQuery;
 import com.pengrad.telegrambot.request.GetFile;
-import com.pengrad.telegrambot.response.SendResponse;
+import com.pengrad.telegrambot.response.BaseResponse;
+import com.pengrad.telegrambot.response.GetUpdatesResponse;
 import com.pengrad.telegrambot.response.GetFileResponse;
 import com.pengrad.telegrambot.Callback;
 import com.pengrad.telegrambot.model.request.InlineKeyboardButton;
 import com.pengrad.telegrambot.model.request.InlineKeyboardMarkup;
+import okhttp3.OkHttpClient;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -37,13 +33,15 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
-public class TelegramManager {
+public class TelegramManager implements OutboxQueue.SendCallback {
     private static TelegramManager instance;
     private TelegramBot bot;
     private boolean isRunning = false;
     private Context appContext;
 
+    private final OutboxQueue outbox = new OutboxQueue();
     private Thread pollingThread;
     private volatile boolean pollingStopped = true;
     private volatile int updateOffset = 0;
@@ -67,10 +65,10 @@ public class TelegramManager {
         }
 
         try {
-            // Custom client: read timeout MUST exceed the long-poll timeout (30s),
-            // and a higher per-host limit keeps async sends (audio uploads) from
-            // starving each other. Polling itself is synchronous → bypasses dispatcher.
+            TelegramErrorLogger.init(appContext);
+
             OkHttpClient client = new OkHttpClient.Builder()
+                    .addInterceptor(TelegramErrorLogger.interceptor())
                     .connectTimeout(15, TimeUnit.SECONDS)
                     .readTimeout(40, TimeUnit.SECONDS)
                     .writeTimeout(30, TimeUnit.SECONDS)
@@ -81,13 +79,33 @@ public class TelegramManager {
             bot = new TelegramBot.Builder(token).okHttpClient(client).build();
             isRunning = true;
 
-            startPolling();
+            outbox.init(appContext, this);
+            outbox.startWorker();
 
+            startPolling();
         } catch (Throwable t) {
             Log.e("TelegramManager", "Fatal error starting Telegram Bot", t);
             isRunning = false;
         }
     }
+
+    public void stop() {
+        pollingStopped = true;
+        if (pollingThread != null) {
+            pollingThread.interrupt();
+            pollingThread = null;
+        }
+        outbox.stopWorker();
+        if (bot != null) {
+            bot.shutdown();
+            bot = null;
+        }
+        isRunning = false;
+    }
+
+    public boolean isBotRunning() { return isRunning; }
+
+    // ─── long polling ───
 
     private void startPolling() {
         pollingStopped = false;
@@ -95,28 +113,19 @@ public class TelegramManager {
             DebugLogger.log("Long polling thread started (timeout=30s)");
             while (!pollingStopped) {
                 try {
-                    GetUpdates request = new GetUpdates()
-                            .offset(updateOffset)
-                            .timeout(30); // server holds the connection up to 30s
-                    GetUpdatesResponse response = bot.execute(request); // synchronous
-
+                    GetUpdates request = new GetUpdates().offset(updateOffset).timeout(30);
+                    GetUpdatesResponse response = bot.execute(request);
                     if (response == null || !response.isOk()) {
-                        DebugLogger.log("Long polling: bad response: " +
-                                (response != null ? response.description() : "null"));
                         Thread.sleep(3000);
                         continue;
                     }
-
                     List<Update> updates = response.updates();
                     if (updates != null && !updates.isEmpty()) {
                         for (Update update : updates) {
                             updateOffset = update.updateId() + 1;
                             try {
-                                if (update.message() != null) {
-                                    handleMessage(update.message());
-                                } else if (update.callbackQuery() != null) {
-                                    handleCallback(update.callbackQuery());
-                                }
+                                if (update.message() != null) handleMessage(update.message());
+                                else if (update.callbackQuery() != null) handleCallback(update.callbackQuery());
                             } catch (Exception ex) {
                                 Log.e("TelegramManager", "Error processing update", ex);
                             }
@@ -137,27 +146,11 @@ public class TelegramManager {
         pollingThread.start();
     }
 
-    public void stop() {
-        pollingStopped = true;
-        if (pollingThread != null) {
-            pollingThread.interrupt();
-            pollingThread = null;
-        }
-        if (bot != null) {
-            bot.shutdown();
-            bot = null;
-        }
-        isRunning = false;
-    }
-
-    public boolean isBotRunning() { return isRunning; }
-
-    // ─── Guards & helpers ───
+    // ─── guards & helpers ───
 
     private boolean isIncomingAllowed(long chatId, long fromId) {
         Long groupChatId = SettingsManager.getGroupChatIdLong(appContext);
         Set<Long> allowedIds = SettingsManager.getAllowedUserIds(appContext);
-
         if (groupChatId != null) {
             if (chatId != groupChatId.longValue()) return false;
             return allowedIds.isEmpty() || allowedIds.contains(fromId);
@@ -171,73 +164,133 @@ public class TelegramManager {
         return "Someone";
     }
 
-    private List<Long> getBroadcastTargets() {
-        List<Long> targets = new java.util.ArrayList<>();
-        Long groupChatId = SettingsManager.getGroupChatIdLong(appContext);
-        if (groupChatId != null) {
-            targets.add(groupChatId);
-        } else {
-            targets.addAll(SettingsManager.getAllowedUserIds(appContext));
+    // ─── OutboxQueue.SendCallback ───
+
+    @Override
+    public int send(OutboxQueue.Item item, int[] retryAfterSec) {
+        if (bot == null) return -1;
+        try {
+            BaseResponse r;
+            switch (item.type) {
+                case "TEXT":
+                    r = bot.execute(new SendMessage(item.chatId, item.text));
+                    break;
+                case "AUDIO": {
+                    File f = new File(item.filePath);
+                    if (!f.exists()) return -2;
+                    r = bot.execute(new SendAudio(item.chatId, f)
+                            .caption(item.caption).title(item.title).performer(item.performer));
+                    break;
+                }
+                case "EDIT_TEXT":
+                    r = bot.execute(new EditMessageText(item.chatId, item.messageId, item.text));
+                    break;
+                case "EDIT_MAIN":
+                    r = bot.execute(new EditMessageText(item.chatId, item.messageId, mainMenuText())
+                            .replyMarkup(buildMainMenuMarkup(VadService.isVadListening)));
+                    break;
+                case "EDIT_SETTINGS":
+                    r = bot.execute(new EditMessageText(item.chatId, item.messageId, "⚙️ Nurse VAD Settings")
+                            .replyMarkup(buildSettingsMarkup()));
+                    break;
+                case "TEXT_RAW_MENU": {
+                    SendMessage m = new SendMessage(item.chatId, item.text)
+                            .replyMarkup(buildMainMenuMarkup(VadService.isVadListening));
+                    if (item.messageId > 0) m.replyToMessageId(item.messageId);
+                    r = bot.execute(m);
+                    break;
+                }
+                default:
+                    return -2;
+            }
+            if (r.isOk()) return 0;
+            if (r.errorCode() == 429) {
+                Integer ra = (r.parameters() != null) ? r.parameters().retryAfter() : null;
+                retryAfterSec[0] = (ra != null) ? ra : 5;
+                return 429;
+            }
+            if (r.errorCode() >= 500) return -1;
+            return -2; // 400/403/404 — permanent, already captured in log_errors.txt
+        } catch (IOException e) {
+            return -1;
+        } catch (Exception e) {
+            return -2;
         }
-        return targets;
     }
 
+    // ─── enqueue wrappers (all outgoing traffic) ───
+
     private void sendToChat(long chatId, String text) {
-        bot.execute(new SendMessage(chatId, text), new Callback<SendMessage, SendResponse>() {
-            @Override
-            public void onResponse(SendMessage request, SendResponse response) {
-                if (!response.isOk()) {
-                    Log.e("TelegramManager", "Failed to send: " + response.description());
-                }
-            }
-            @Override
-            public void onFailure(SendMessage request, IOException e) {
-                Log.e("TelegramManager", "Network error sending", e);
-            }
-        });
+        outbox.enqueueText(chatId, text);
     }
 
     private void broadcastMessage(String text) {
-        for (Long chatId : getBroadcastTargets()) {
-            sendToChat(chatId, text);
-        }
+        for (Long chatId : getBroadcastTargets()) outbox.enqueueText(chatId, text);
     }
 
     private void notifyOtherUsers(long excludeUserId, String message) {
         Long groupChatId = SettingsManager.getGroupChatIdLong(appContext);
         if (groupChatId != null) {
-            sendToChat(groupChatId, message);
+            outbox.enqueueText(groupChatId, message);
             return;
         }
-        Set<Long> allowedIds = SettingsManager.getAllowedUserIds(appContext);
-        for (Long chatId : allowedIds) {
-            if (chatId != excludeUserId) {
-                sendToChat(chatId, message);
-            }
+        for (Long chatId : SettingsManager.getAllowedUserIds(appContext)) {
+            if (chatId != excludeUserId) outbox.enqueueText(chatId, message);
         }
     }
 
-    // ─── Start / Stop with optimistic state ───
+    private List<Long> getBroadcastTargets() {
+        List<Long> targets = new java.util.ArrayList<>();
+        Long groupChatId = SettingsManager.getGroupChatIdLong(appContext);
+        if (groupChatId != null) targets.add(groupChatId);
+        else targets.addAll(SettingsManager.getAllowedUserIds(appContext));
+        return targets;
+    }
 
-    private boolean tryStartListening() {
-        if (ContextCompat.checkSelfPermission(appContext, Manifest.permission.RECORD_AUDIO)
-                != PackageManager.PERMISSION_GRANTED) {
-            return false;
+    private void editMessage(long chatId, int messageId, String text) {
+        outbox.enqueue(OutboxQueue.Lane.INTERACTIVE, "EDIT_TEXT", chatId, messageId, text, null, null, null, null);
+    }
+
+    private void editMainMenu(long chatId, int messageId) {
+        outbox.enqueue(OutboxQueue.Lane.INTERACTIVE, "EDIT_MAIN", chatId, messageId, null, null, null, null, null);
+    }
+
+    private void editSettingsMenu(long chatId, int messageId) {
+        outbox.enqueue(OutboxQueue.Lane.INTERACTIVE, "EDIT_SETTINGS", chatId, messageId, null, null, null, null, null);
+    }
+
+    public void sendTextMessage(String text) {
+        if (!isRunning) return;
+        for (Long chatId : getBroadcastTargets()) outbox.enqueueText(chatId, text);
+    }
+
+    public void sendAudioEvent(String artifactUri, int level, String responseFileName, boolean isPoni) {
+        if (!isRunning) return;
+        List<Long> targets = getBroadcastTargets();
+        if (targets.isEmpty()) return;
+        File file = new File(artifactUri.replace("file://", ""));
+        if (!file.exists()) return;
+
+        String emoji;
+        if (isPoni) emoji = "⚪️";
+        else switch (level) {
+            case 1: emoji = "🔵"; break;
+            case 2: emoji = "🟢"; break;
+            case 3: emoji = "🟡"; break;
+            case 4: emoji = "🟠"; break;
+            case 5: emoji = "🔴"; break;
+            default: emoji = "⚪️"; break;
         }
-        VadService.startService(appContext);
-        VadService.isVadListening = true; // optimistic UI state until service confirms
-        return true;
+        String caption = emoji + " " + (responseFileName != null ? responseFileName : "No file found");
+        boolean useEmb = SettingsManager.getUseEmbeddings(appContext);
+        String performer = (useEmb && !isPoni) ? "Client" : "Someone";
+
+        for (Long chatId : targets) {
+            outbox.enqueueAudio(chatId, file.getAbsolutePath(), caption, "Speech Detected", performer);
+        }
     }
 
-    private void stopListeningNow() {
-        VadService.stopService(appContext);
-        VadService.isVadListening = false; // optimistic UI state until service confirms
-    }
-
-    private static final String MIC_WARNING =
-            "⚠️ Microphone permission is not granted. Open the app once and allow it, then try again.";
-
-    // ─── Incoming messages ───
+    // ─── incoming ───
 
     private void handleMessage(Message message) {
         if (message.from() == null || message.chat() == null) return;
@@ -272,6 +325,7 @@ public class TelegramManager {
             // broadcastMessage("🎤 Audio from " + senderName);
             // (original combined form, commented out:)
             // broadcastMessage("🎤 " + label + " from " + senderName);
+
             downloadAndQueueVoice(fileId, senderName, isAudio, ext);
             return;
         }
@@ -284,21 +338,33 @@ public class TelegramManager {
         if (cmd.equals("/control") || cmd.startsWith("/control@")) {
             sendMainMenu(chatId, message.messageId());
         } else if (cmd.equals("/start") || cmd.startsWith("/start@")) {
-            if (!tryStartListening()) {
-                sendToChat(chatId, MIC_WARNING);
-            } else {
-                sendToChat(chatId, "🟩🟩🟩 Start 🟩🟩🟩");
-            }
+            if (!tryStartListening()) sendToChat(chatId, MIC_WARNING);
+            else sendToChat(chatId, "🟩🟩🟩 Start 🟩");
             notifyOtherUsers(userId, userName + " hit Start");
         } else if (cmd.equals("/stop") || cmd.startsWith("/stop@")) {
             stopListeningNow();
-            sendToChat(chatId, "🟥🟥🟥 Stop 🟥🟥🟥");
+            sendToChat(chatId, "🟥🟥 Stop 🟥");
             notifyOtherUsers(userId, userName + " hit Stop");
         }
-        // Any other message is ignored
     }
 
-    // ─── Callbacks ───
+    private static final String MIC_WARNING =
+            "⚠️ Microphone permission is not granted. Open the app once and allow it, then try again.";
+
+    private boolean tryStartListening() {
+        if (ContextCompat.checkSelfPermission(appContext, Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED) {
+            return false;
+        }
+        VadService.startService(appContext);
+        VadService.isVadListening = true;
+        return true;
+    }
+
+    private void stopListeningNow() {
+        VadService.stopService(appContext);
+        VadService.isVadListening = false;
+    }
 
     private void handleCallback(CallbackQuery callback) {
         if (callback.from() == null || callback.message() == null || callback.message().chat() == null) return;
@@ -314,34 +380,34 @@ public class TelegramManager {
             boolean ok = tryStartListening();
             if (!ok) sendToChat(chatId, MIC_WARNING);
             notifyOtherUsers(userId, userName + " hit Start");
-            editMainMenuWithState(chatId, messageId, ok);
+            editMainMenu(chatId, messageId);
         } else if (data.equals("stop_vad")) {
             stopListeningNow();
             notifyOtherUsers(userId, userName + " hit Stop");
-            editMainMenuWithState(chatId, messageId, false);
+            editMainMenu(chatId, messageId);
         } else if (data.equals("toggle_silent")) {
             boolean current = SettingsManager.isSilentMode(appContext);
             SettingsManager.saveSilentMode(appContext, !current);
             editMainMenu(chatId, messageId);
             notifyOtherUsers(userId, userName + " Toggled Silent Mode " + (!current ? "ON" : "OFF"));
         } else if (data.equals("settings")) {
-            sendSettingsMenu(chatId, messageId);
+            editSettingsMenu(chatId, messageId);
         } else if (data.equals("back_main")) {
             editMainMenu(chatId, messageId);
         } else if (data.startsWith("toggle_wait")) {
             boolean current = SettingsManager.getWaitForEnd(appContext);
             SettingsManager.saveWaitForEnd(appContext, !current);
-            sendSettingsMenu(chatId, messageId);
+            editSettingsMenu(chatId, messageId);
             notifyOtherUsers(userId, userName + " Toggled Wait For End " + (!current ? "ON" : "OFF"));
         } else if (data.equals("toggle_use_embeddings")) {
             boolean current = SettingsManager.getUseEmbeddings(appContext);
             SettingsManager.saveUseEmbeddings(appContext, !current);
-            sendSettingsMenu(chatId, messageId);
+            editSettingsMenu(chatId, messageId);
             notifyOtherUsers(userId, userName + " Toggled Use Embeddings " + (!current ? "ON" : "OFF"));
         } else if (data.equals("toggle_repeat_reminder")) {
             boolean current = SettingsManager.getRepeatReminder(appContext);
             SettingsManager.saveRepeatReminder(appContext, !current);
-            sendSettingsMenu(chatId, messageId);
+            editSettingsMenu(chatId, messageId);
             notifyOtherUsers(userId, userName + " Toggled Repeat Reminder " + (!current ? "ON" : "OFF"));
         } else if (data.startsWith("delay_")) {
             int current = SettingsManager.getDelay(appContext);
@@ -352,7 +418,7 @@ public class TelegramManager {
                 SettingsManager.saveDelay(appContext, newValue);
                 notifyOtherUsers(userId, userName + " changed Delay from " + current + "s to " + newValue + "s");
             }
-            sendSettingsMenu(chatId, messageId);
+            editSettingsMenu(chatId, messageId);
         } else if (data.startsWith("dur_")) {
             int current = SettingsManager.getDurationThreshold(appContext);
             int newValue = current;
@@ -362,7 +428,7 @@ public class TelegramManager {
                 SettingsManager.saveDurationThreshold(appContext, newValue);
                 notifyOtherUsers(userId, userName + " changed Ignore Short from " + current + "s to " + newValue + "s");
             }
-            sendSettingsMenu(chatId, messageId);
+            editSettingsMenu(chatId, messageId);
         } else if (data.startsWith("thresh_")) {
             String[] parts = data.split("_");
             if (parts.length >= 3) {
@@ -379,7 +445,7 @@ public class TelegramManager {
                     notifyOtherUsers(userId, userName + " changed Level " + level + " from " + oldValue + "% to " + newValue + "%");
                 }
             }
-            sendSettingsMenu(chatId, messageId);
+            editSettingsMenu(chatId, messageId);
         } else if (data.startsWith("poi_thresh_")) {
             int current = SettingsManager.getPoiThreshold(appContext);
             int newValue = current;
@@ -391,7 +457,7 @@ public class TelegramManager {
                         String.format(java.util.Locale.US, "%.2f", current / 100f) + " to " +
                         String.format(java.util.Locale.US, "%.2f", newValue / 100f));
             }
-            sendSettingsMenu(chatId, messageId);
+            editSettingsMenu(chatId, messageId);
         } else if (data.startsWith("poni_thresh_")) {
             int current = SettingsManager.getPoniThreshold(appContext);
             int newValue = current;
@@ -403,7 +469,7 @@ public class TelegramManager {
                         String.format(java.util.Locale.US, "%.2f", current / 100f) + " to " +
                         String.format(java.util.Locale.US, "%.2f", newValue / 100f));
             }
-            sendSettingsMenu(chatId, messageId);
+            editSettingsMenu(chatId, messageId);
         } else if (data.startsWith("rem_min_")) {
             int current = SettingsManager.getReminderSpeechMin(appContext);
             int newValue = current;
@@ -413,7 +479,7 @@ public class TelegramManager {
                 SettingsManager.saveReminderSpeechMin(appContext, newValue);
                 notifyOtherUsers(userId, userName + " changed Reminder After (Min) from " + current + "s to " + newValue + "s");
             }
-            sendSettingsMenu(chatId, messageId);
+            editSettingsMenu(chatId, messageId);
         } else if (data.startsWith("rem_max_")) {
             int current = SettingsManager.getReminderSpeechMax(appContext);
             int newValue = current;
@@ -423,7 +489,7 @@ public class TelegramManager {
                 SettingsManager.saveReminderSpeechMax(appContext, newValue);
                 notifyOtherUsers(userId, userName + " changed Reminder After (Max) from " + current + "s to " + newValue + "s");
             }
-            sendSettingsMenu(chatId, messageId);
+            editSettingsMenu(chatId, messageId);
         } else if (data.startsWith("rep_min_")) {
             int current = SettingsManager.getRepeatReminderMin(appContext);
             int newValue = current;
@@ -433,7 +499,7 @@ public class TelegramManager {
                 SettingsManager.saveRepeatReminderMin(appContext, newValue);
                 notifyOtherUsers(userId, userName + " changed Repeat Reminder After (Min) from " + current + "s to " + newValue + "s");
             }
-            sendSettingsMenu(chatId, messageId);
+            editSettingsMenu(chatId, messageId);
         } else if (data.startsWith("rep_max_")) {
             int current = SettingsManager.getRepeatReminderMax(appContext);
             int newValue = current;
@@ -443,13 +509,13 @@ public class TelegramManager {
                 SettingsManager.saveRepeatReminderMax(appContext, newValue);
                 notifyOtherUsers(userId, userName + " changed Repeat Reminder After (Max) from " + current + "s to " + newValue + "s");
             }
-            sendSettingsMenu(chatId, messageId);
+            editSettingsMenu(chatId, messageId);
         }
 
-        bot.execute(new AnswerCallbackQuery(callback.id()));
+        bot.execute(new com.pengrad.telegrambot.request.AnswerCallbackQuery(callback.id()));
     }
 
-    // ─── Main menu ───
+    // ─── menus ───
 
     private String mainMenuText() {
         return "Nurse VAD Control Panel";
@@ -475,22 +541,12 @@ public class TelegramManager {
         SendMessage msg = new SendMessage(chatId, mainMenuText())
                 .replyMarkup(buildMainMenuMarkup(VadService.isVadListening));
         if (replyToId > 0) msg.replyToMessageId(replyToId);
-        bot.execute(msg);
+        // Menu send is interactive but must not itself be queued before bot is ready:
+        outbox.enqueue(OutboxQueue.Lane.INTERACTIVE, "TEXT_RAW_MENU", chatId, replyToId,
+                mainMenuText(), null, null, null, null);
     }
 
-    private void editMainMenu(long chatId, int messageId) {
-        editMainMenuWithState(chatId, messageId, VadService.isVadListening);
-    }
-
-    private void editMainMenuWithState(long chatId, int messageId, boolean listening) {
-        EditMessageText edit = new EditMessageText(chatId, messageId, mainMenuText())
-                .replyMarkup(buildMainMenuMarkup(listening));
-        bot.execute(edit);
-    }
-
-    // ─── Settings menu ───
-
-    private void sendSettingsMenu(long chatId, int messageId) {
+    private InlineKeyboardMarkup buildSettingsMarkup() {
         boolean wait = SettingsManager.getWaitForEnd(appContext);
         int delay = SettingsManager.getDelay(appContext);
         int dur = SettingsManager.getDurationThreshold(appContext);
@@ -504,9 +560,7 @@ public class TelegramManager {
         int remMin = SettingsManager.getReminderSpeechMin(appContext);
         int remMax = SettingsManager.getReminderSpeechMax(appContext);
 
-        String text = "⚙️ Nurse VAD Settings";
-
-        InlineKeyboardMarkup markup = new InlineKeyboardMarkup(
+        return new InlineKeyboardMarkup(
                 new InlineKeyboardButton[]{ new InlineKeyboardButton("Toggle Wait (" + (wait ? "ON" : "OFF") + ")").callbackData("toggle_wait") },
                 new InlineKeyboardButton[]{
                     new InlineKeyboardButton("-1s").callbackData("delay_dec"),
@@ -577,12 +631,9 @@ public class TelegramManager {
                 },
                 new InlineKeyboardButton[]{ new InlineKeyboardButton("🔙 Back").callbackData("back_main") }
         );
-
-        EditMessageText edit = new EditMessageText(chatId, messageId, text).replyMarkup(markup);
-        bot.execute(edit);
     }
 
-    // ─── Voice message download with retry ───
+    // ─── voice/audio download with retry ───
 
     private void downloadAndQueueVoice(String fileId, String senderName, boolean isAudio, String ext) {
         downloadWithRetry(fileId, senderName, 0, isAudio, ext);
@@ -590,13 +641,11 @@ public class TelegramManager {
 
     private void downloadWithRetry(String fileId, String senderName, int attempt, boolean isAudio, String ext) {
         final int MAX_RETRIES = 3;
-
         bot.execute(new GetFile(fileId), new Callback<GetFile, GetFileResponse>() {
             @Override
             public void onResponse(GetFile request, GetFileResponse response) {
                 if (response.isOk()) {
                     String fileUrl = bot.getFullFilePath(response.file());
-
                     new Thread(() -> {
                         try {
                             URL url = new URL(fileUrl);
@@ -609,12 +658,9 @@ public class TelegramManager {
                                     "tg_media_" + System.currentTimeMillis() + ext);
                             FileOutputStream output = new FileOutputStream(tempFile);
                             InputStream input = connection.getInputStream();
-
                             byte[] data = new byte[4096];
                             int count;
-                            while ((count = input.read(data)) != -1) {
-                                output.write(data, 0, count);
-                            }
+                            while ((count = input.read(data)) != -1) output.write(data, 0, count);
                             output.close();
                             input.close();
                             connection.disconnect();
@@ -625,7 +671,6 @@ public class TelegramManager {
                             i.putExtra("SENDER", senderName);
                             i.putExtra("IS_AUDIO", isAudio);
                             appContext.startService(i);
-
                         } catch (Exception e) {
                             Log.e("TelegramManager", "Download attempt " + (attempt + 1) + " failed", e);
                             handleDownloadRetry(fileId, senderName, attempt, MAX_RETRIES, isAudio);
@@ -647,78 +692,13 @@ public class TelegramManager {
         String label = isAudio ? "Audio" : "Voice message";
         if (attempt < maxRetries - 1) {
             long delay = (long) Math.pow(2, attempt) * 1000;
-            DebugLogger.log(label + " download retry " + (attempt + 2) + " in " + delay + "ms");
-            new Handler(Looper.getMainLooper()).postDelayed(() -> {
-                downloadWithRetry(fileId, senderName, attempt + 1, isAudio, null);
-            }, delay);
+            new Handler(Looper.getMainLooper()).postDelayed(() ->
+                    downloadWithRetry(fileId, senderName, attempt + 1, isAudio, null), delay);
         } else {
             DebugLogger.log("All " + label.toLowerCase() + " download attempts failed for sender: " + senderName);
             EventRepository.getInstance().addEvent(
-                new LogEvent(LogEvent.Type.WARNING, label + " download failed from " + senderName)
-            );
+                    new LogEvent(LogEvent.Type.WARNING, label + " download failed from " + senderName));
             broadcastMessage("⚠️ Failed to download " + label.toLowerCase() + " from " + senderName);
-        }
-    }
-
-    // ─── Outgoing event messages ───
-
-    public void sendAudioEvent(String wavUri, int level, String responseFileName, boolean isPoni) {
-        if (!isRunning || bot == null) return;
-        List<Long> targets = getBroadcastTargets();
-        if (targets.isEmpty()) return;
-
-        try {
-            File file = new File(wavUri.replace("file://", ""));
-            if (!file.exists()) return;
-
-            String emoji;
-            if (isPoni) {
-                emoji = "⚪️";
-            } else {
-                switch (level) {
-                    case 1:  emoji = "🔵"; break;
-                    case 2:  emoji = "🟢"; break;
-                    case 3:  emoji = "🟡"; break;
-                    case 4:  emoji = "🟠"; break;
-                    case 5:  emoji = "🔴"; break;
-                    default: emoji = "⚪️"; break;
-                }
-            }
-
-            // Always show the response file name (or fallback); never "PONI is talking"
-            String caption = emoji + " " + (responseFileName != null ? responseFileName : "No file found");
-
-            boolean useEmb = SettingsManager.getUseEmbeddings(appContext);
-            String performer = (useEmb && !isPoni) ? "Client" : "Someone";
-
-            for (Long chatId : targets) {
-                SendAudio sendAudio = new SendAudio(chatId, file)
-                        .caption(caption)
-                        .title("Speech Detected")
-                        .performer(performer);
-
-                bot.execute(sendAudio, new Callback<SendAudio, SendResponse>() {
-                    @Override
-                    public void onResponse(SendAudio request, SendResponse response) {
-                        if (!response.isOk()) {
-                            Log.e("TelegramManager", "Failed to send audio: " + response.description());
-                        }
-                    }
-                    @Override
-                    public void onFailure(SendAudio request, IOException e) {
-                        Log.e("TelegramManager", "Network error sending audio", e);
-                    }
-                });
-            }
-        } catch (Exception e) {
-            Log.e("TelegramManager", "Error preparing audio file", e);
-        }
-    }
-
-    public void sendTextMessage(String text) {
-        if (!isRunning || bot == null) return;
-        for (Long chatId : getBroadcastTargets()) {
-            sendToChat(chatId, text);
         }
     }
 }
