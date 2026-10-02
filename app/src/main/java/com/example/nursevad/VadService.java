@@ -506,7 +506,7 @@ public class VadService extends Service {
             if (finalRecordedFile != null && finalRecordedFile.exists()) {
                 File opus = OpusTranscoder.transcode(finalRecordedFile, 32);
                 if (opus != null) {
-                    finalRecordedFile.delete();          // WAV was only a temporary PCM source
+                    // finalRecordedFile.delete();          // WAV was only a temporary PCM source
                     mediaFile = opus;
                     mediaUri = Uri.fromFile(opus).toString();
                 } else {
