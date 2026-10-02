@@ -175,13 +175,6 @@ public class TelegramManager implements OutboxQueue.SendCallback {
                 case "TEXT":
                     r = bot.execute(new SendMessage(item.chatId, item.text));
                     break;
-                case "TEXT_RAW_MENU": {
-                    SendMessage m = new SendMessage(item.chatId, item.text)
-                            .replyMarkup(buildMainMenuMarkup(VadService.isVadListening));
-                    if (item.messageId > 0) m.replyToMessageId(item.messageId);
-                    r = bot.execute(m);
-                    break;
-                }
                 case "AUDIO": {
                     File f = new File(item.filePath);
                     if (!f.exists()) return -2;
@@ -200,6 +193,13 @@ public class TelegramManager implements OutboxQueue.SendCallback {
                     r = bot.execute(new EditMessageText(item.chatId, item.messageId, "⚙️ Nurse VAD Settings")
                             .replyMarkup(buildSettingsMarkup()));
                     break;
+                case "TEXT_RAW_MENU": {
+                    SendMessage m = new SendMessage(item.chatId, item.text)
+                            .replyMarkup(buildMainMenuMarkup(VadService.isVadListening));
+                    if (item.messageId > 0) m.replyToMessageId(item.messageId);
+                    r = bot.execute(m);
+                    break;
+                }
                 default:
                     return -2;
             }
@@ -209,12 +209,12 @@ public class TelegramManager implements OutboxQueue.SendCallback {
                 retryAfterSec[0] = (ra != null) ? ra : 5;
                 return 429;
             }
-            if (r.errorCode() >= 500) return -1;   // server-side → transient
-            return -2;                              // 400/403/404 → permanent (see log_errors.txt)
-        } catch (Exception e) {
-            // Sync execute() wraps transport/IO failures in unchecked exceptions,
-            // so any exception here means a network-level problem → transient, retry.
+            if (r.errorCode() >= 500) return -1;
+            return -2; // 400/403/404 — permanent, already captured in log_errors.txt
+        } catch (IOException e) {
             return -1;
+        } catch (Exception e) {
+            return -2;
         }
     }
 
