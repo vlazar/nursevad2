@@ -101,6 +101,14 @@ public class VadService extends Service {
         context.startService(i);
     }
 
+    public static File getAudioDir(Context context) {
+        File base = context.getExternalFilesDir(null);   // /storage/emulated/0/Android/data/<pkg>/files
+        if (base == null) base = context.getFilesDir();  // fallback: /data/data/<pkg>/files
+        File audio = new File(base, "audio");
+        if (!audio.exists()) audio.mkdirs();
+        return audio;
+    }
+
     @Override
     public void onCreate() {
         super.onCreate();
@@ -367,7 +375,7 @@ public class VadService extends Service {
                         pauseReminderTimer();
 
                         try {
-                            recordedFile = new File(getCacheDir(), "speech_" + speechStartMs + ".wav");
+                            recordedFile = new File(getAudioDir(VadService.this), "speech_" + speechStartMs + ".wav");
                             fos = new FileOutputStream(recordedFile);
                             writeWavHeader(fos, 16000, 1, 16);
                         } catch (Exception e) {}
@@ -491,14 +499,30 @@ public class VadService extends Service {
                 isPoi = SpeakerVerifier.getInstance(this).verify(recordedFile);
             }
 
-            LogEvent event = new LogEvent(LogEvent.Type.SPEECH, finalLevel, finalFile, finalRecordedUri);
-            event.isPoni = !isPoi;
+            File artifact = finalRecordedFile;
+            String artifactUri = finalRecordedUri;
+            if (finalRecordedFile != null && finalRecordedFile.exists()) {
+                File ogg = new File(finalRecordedFile.getParent(),
+                        finalRecordedFile.getName().replaceAll("\\.wav$", "") + ".ogg");
+                DebugLogger.log("Transcoding speech WAV to Opus OGG...");
+                if (OpusTranscoder.transcodeWavToOpusOgg(finalRecordedFile, ogg)) {
+                    DebugLogger.log("Transcode OK: " + ogg.getName() + "; deleting source WAV");
+                    finalRecordedFile.delete();
+                    artifact = ogg;
+                    artifactUri = Uri.fromFile(ogg).toString();
+                } else {
+                    DebugLogger.log("Transcode FAILED; keeping WAV and sending it instead");
+                }
+            }
 
+            LogEvent event = new LogEvent(LogEvent.Type.SPEECH, finalLevel, finalFile, artifactUri);
+            event.isPoni = !isPoi;
             EventRepository.getInstance().addEvent(event);
 
-            if (finalRecordedFile != null && finalRecordedFile.exists()) {
+            if (artifact != null && artifact.exists()) {
                 String responseName = (finalFile != null) ? finalFile.displayName : null;
-                TelegramManager.getInstance().sendAudioEvent(Uri.fromFile(finalRecordedFile).toString(), finalLevel, responseName, !isPoi);
+                TelegramManager.getInstance().sendAudioEvent(
+                        Uri.fromFile(artifact).toString(), finalLevel, responseName, !isPoi);
             }
 
             if (isPoi) {
