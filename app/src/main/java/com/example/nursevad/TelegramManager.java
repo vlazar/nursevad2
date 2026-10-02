@@ -615,7 +615,7 @@ public class TelegramManager {
                             connection.setReadTimeout(15000);
                             connection.connect();
 
-                            File tempFile = new File(VadService.getAudioDir(appContext), "tg_media_" + System.currentTimeMillis() + ext);
+                            File tempFile = new File(appContext.getCacheDir(), "tg_media_" + System.currentTimeMillis() + ext);
                             FileOutputStream output = new FileOutputStream(tempFile);
                             InputStream input = connection.getInputStream();
 
