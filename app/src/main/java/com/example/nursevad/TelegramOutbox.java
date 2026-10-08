@@ -540,11 +540,11 @@ public class TelegramOutbox {
         }
         int code = resp.errorCode();
         String desc = resp.description();
-                if (code == 429) {
+        if (code == 429) {
             int retryAfter = (resp.parameters() != null && resp.parameters().retryAfter() != null)
                     ? resp.parameters().retryAfter() : 0;
             cs.pausedUntilMs = now + retryAfter * 1000L + RETRY_PADDING_MS;
-            String line = "Outbox 429: chat=" + item.chatId + " retry_after=" + retryAfter
+            String line = "Outbox 429: chat=" + head.chatId + " retry_after=" + retryAfter
                     + "s depths i=" + depth(Lane.INTERACTIVE) + " b=" + depth(Lane.BULK);
             DebugLogger.log(line);
             DebugLogger.logError(line + " | " + desc);
