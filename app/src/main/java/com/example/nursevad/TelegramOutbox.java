@@ -376,7 +376,10 @@ public class TelegramOutbox {
         if (group.size() > 1) {
             head.stitchMembers = group;
             DebugLogger.log("Outbox stitch group formed: chat=" + head.chatId
-                    + " size=" + group.size() + " level=" + head.level + " poni=" + head.isPoni);
+                    + " size=" + group.size() + " level=" + head.level + " poni=" + head.isPoni
+                    + " k=" + computeK(head.chatId)
+                    + " rate60s=" + (bulkEnqueueWindow.get(head.chatId) == null ? 0 : bulkEnqueueWindow.get(head.chatId).size())
+                    + " depth=" + depthOf(head.chatId));
         }
         return group;
     }
@@ -393,10 +396,17 @@ public class TelegramOutbox {
     }
 
     private int computeK(long chatId) { // lock held
-        int depth = 1;
+        int depth = 1; // head already removed from deque
         for (Item i : bulk) if (i.chatId == chatId) depth++;
-        int k = (int) Math.ceil(depth / (double) safeCountFor(chatId));
-        return Math.max(2, k);
+
+        ArrayDeque<Long> w = bulkEnqueueWindow.get(chatId);
+        int rate = (w == null) ? 0 : w.size(); // window is pruned in stitchActiveLocked
+
+        int safe = safeCountFor(chatId);
+        int kRate  = (int) Math.ceil(rate  / (double) safe);
+        int kDepth = (int) Math.ceil(depth / (double) safe);
+        int k = Math.max(2, Math.max(kRate, kDepth));
+        return k;
     }
 
     private long computeWait(long now) {
