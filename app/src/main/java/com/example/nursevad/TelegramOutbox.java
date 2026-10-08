@@ -243,6 +243,7 @@ public class TelegramOutbox {
 
     // ── Dispatch & error policy ──
     private void dispatch(Item item) {
+        long dispatchNow = SystemClock.elapsedRealtime();   // ← pace reference
         BaseResponse resp = null;
         RuntimeException failure = null;
         try {
@@ -281,8 +282,9 @@ public class TelegramOutbox {
             return;
         }
         if (resp.isOk()) {
-            cs.nextSendAtMs = now + intervalFor(item.chatId);
+            cs.nextSendAtMs = dispatchNow + intervalFor(item.chatId);
             DebugLogger.log("Outbox sent ok: kind=" + item.kind + " chat=" + item.chatId
+                    + " uploadMs=" + (now - dispatchNow)
                     + " depths i=" + depth(Lane.INTERACTIVE) + " b=" + depth(Lane.BULK));
             // Step 2: persistence commit here. Step 3: WAV/stitched-file cleanup here.
             return;
@@ -321,6 +323,8 @@ public class TelegramOutbox {
 
     private void handleTransient(Item item, long now, String why) {
         item.attempts++;
+        DebugLogger.log("Outbox transient failure attempt=" + item.attempts
+                + " kind=" + item.kind + " chat=" + item.chatId + " : " + why);
         DebugLogger.logError("Transient failure attempt=" + item.attempts + " kind=" + item.kind
                 + " chat=" + item.chatId + " : " + why);
         if (item.attempts >= MAX_ATTEMPTS) {
