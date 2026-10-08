@@ -9,19 +9,23 @@ import com.pengrad.telegrambot.request.SendAudio;
 import com.pengrad.telegrambot.request.SendMessage;
 import com.pengrad.telegrambot.response.BaseResponse;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
-import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
 /**
  * Two-lane outbox with a single paced worker.
  *  - INTERACTIVE (memory-only): texts, menu edits, warnings, notices.
- *  - BULK: speech-event audio (persistence arrives in Step 2, stitching in Step 3).
+ *  - BULK (persisted): speech-event audio; survives crashes via bulk_queue.json.
  * Bypassed entirely (never queued): answerCallbackQuery, getUpdates long-poll, inbound downloads.
  */
 public class TelegramOutbox {
@@ -38,11 +42,11 @@ public class TelegramOutbox {
         public Integer editMessageId;
         public Integer replyToMessageId;
         public InlineKeyboardMarkup markup;
-        public String filePath;   // artifact to upload (OGG/WAV)
+        public String filePath;
         public String caption;
         public String title;
         public String performer;
-        // Stitching metadata (used from Step 3; persisted from Step 2)
+        // Stitching metadata (used from Step 3)
         public int level;
         public boolean isPoni;
         public String captionBody;
@@ -51,7 +55,7 @@ public class TelegramOutbox {
         public long speechEndMs;
         // Runtime
         public int attempts;
-        public final long enqueuedAt = SystemClock.elapsedRealtime();
+        public long enqueuedAt = SystemClock.elapsedRealtime();
         public long readyAt;
     }
 
@@ -75,6 +79,7 @@ public class TelegramOutbox {
     private TelegramBot bot;
     private Context appContext;
     private OutboxListener listener;
+    private File queueFile;
 
     private final Object lock = new Object();
     private Thread worker;
@@ -95,16 +100,22 @@ public class TelegramOutbox {
         this.bot = bot;
         this.appContext = context.getApplicationContext();
         this.listener = listener;
+        File base = appContext.getExternalFilesDir(null);
+        if (base == null) base = appContext.getFilesDir();
+        File dir = new File(base, "outbox");
+        if (!dir.exists()) dir.mkdirs();
+        queueFile = new File(dir, "bulk_queue.json");
     }
 
     public void startWorker() {
         synchronized (lock) {
             if (running && worker != null && worker.isAlive()) return;
+            loadBulkLocked();
             running = true;
             worker = new Thread(this::workerLoop, "TelegramOutbox");
             worker.setDaemon(true);
             worker.start();
-            DebugLogger.log("Outbox worker started");
+            DebugLogger.log("Outbox worker started (bulk depth after load=" + bulk.size() + ")");
         }
     }
 
@@ -113,10 +124,105 @@ public class TelegramOutbox {
             running = false;
             lock.notifyAll();
         }
-        // Step 2 adds: persist remaining bulk items here.
+        // Bulk state is already on disk (rewritten on every enqueue/removal).
+    }
+
+    // ── Persistence (bulk lane only, commit-after-success) ──
+
+    private void persistBulkLocked() {
+        if (queueFile == null) return;
+        try {
+            JSONArray arr = new JSONArray();
+            for (Item i : bulk) {
+                JSONObject o = new JSONObject();
+                o.put("id", i.id);
+                o.put("chatId", i.chatId);
+                o.put("filePath", i.filePath);
+                o.put("caption", i.caption);
+                o.put("title", i.title);
+                o.put("performer", i.performer);
+                o.put("level", i.level);
+                o.put("isPoni", i.isPoni);
+                o.put("captionBody", i.captionBody);
+                if (i.wavPath != null) o.put("wavPath", i.wavPath);
+                o.put("speechStartMs", i.speechStartMs);
+                o.put("speechEndMs", i.speechEndMs);
+                o.put("attempts", i.attempts);
+                arr.put(o);
+            }
+            JSONObject root = new JSONObject();
+            root.put("items", arr);
+
+            File tmp = new File(queueFile.getAbsolutePath() + ".tmp");
+            FileOutputStream fos = new FileOutputStream(tmp);
+            fos.write(root.toString().getBytes(StandardCharsets.UTF_8));
+            fos.getFD().sync();
+            fos.close();
+            if (!tmp.renameTo(queueFile)) {
+                DebugLogger.log("Outbox persist: rename failed");
+            }
+        } catch (Exception e) {
+            DebugLogger.log("Outbox persist failed: " + e);
+        }
+    }
+
+    private void loadBulkLocked() {
+        bulk.clear();
+        if (queueFile == null || !queueFile.exists()) return;
+        try {
+            FileInputStream fis = new FileInputStream(queueFile);
+            byte[] data = new byte[(int) queueFile.length()];
+            int read = 0;
+            while (read < data.length) {
+                int r = fis.read(data, read, data.length - read);
+                if (r < 0) break;
+                read += r;
+            }
+            fis.close();
+            JSONObject root = new JSONObject(new String(data, 0, read, StandardCharsets.UTF_8));
+            JSONArray arr = root.optJSONArray("items");
+            if (arr == null) return;
+            long now = SystemClock.elapsedRealtime();
+            int dropped = 0;
+            for (int k = 0; k < arr.length(); k++) {
+                JSONObject o = arr.getJSONObject(k);
+                String filePath = o.optString("filePath", "");
+                if (filePath.isEmpty() || !new File(filePath).exists()) { dropped++; continue; }
+                Item i = new Item();
+                i.lane = Lane.BULK;
+                i.kind = Kind.AUDIO;
+                i.chatId = o.optLong("chatId");
+                i.filePath = filePath;
+                i.caption = o.optString("caption", "");
+                i.title = o.optString("title", "Speech Detected");
+                i.performer = o.optString("performer", "Someone");
+                i.level = o.optInt("level", 1);
+                i.isPoni = o.optBoolean("isPoni", false);
+                i.captionBody = o.optString("captionBody", "");
+                i.wavPath = o.optString("wavPath", null);
+                i.speechStartMs = o.optLong("speechStartMs", 0);
+                i.speechEndMs = o.optLong("speechEndMs", 0);
+                i.attempts = o.optInt("attempts", 0);
+                i.enqueuedAt = now; // treat resumed backlog as fresh for the pace window
+                bulk.addLast(i);
+            }
+            DebugLogger.log("Outbox loaded bulk queue: " + bulk.size() + " items, dropped " + dropped + " (missing artifacts)");
+            if (dropped > 0) persistBulkLocked();
+        } catch (Exception e) {
+            DebugLogger.log("Outbox bulk queue corrupt, discarding: " + e);
+            bulk.clear();
+            persistBulkLocked();
+        }
+    }
+
+    private void persistIfBulk(Item i) {
+        if (i.lane == Lane.BULK) {
+            synchronized (lock) { persistBulkLocked(); }
+        }
     }
 
     // ── Enqueue API ──
+
     public void enqueueText(long chatId, String text, InlineKeyboardMarkup markup) {
         enqueueText(chatId, text, markup, null);
     }
@@ -133,7 +239,6 @@ public class TelegramOutbox {
         i.lane = Lane.INTERACTIVE; i.kind = Kind.EDIT; i.chatId = chatId;
         i.editMessageId = messageId; i.text = text; i.markup = markup;
         synchronized (lock) {
-            // Coalesce: a newer edit for the same message supersedes a pending one
             Iterator<Item> it = interactive.iterator();
             while (it.hasNext()) {
                 Item old = it.next();
@@ -169,6 +274,7 @@ public class TelegramOutbox {
         (i.lane == Lane.INTERACTIVE ? interactive : bulk).addLast(i);
         DebugLogger.log("Outbox enqueue: lane=" + i.lane + " kind=" + i.kind + " chat=" + i.chatId
                 + " depths i=" + interactive.size() + " b=" + bulk.size());
+        if (i.lane == Lane.BULK) persistBulkLocked();
         lock.notifyAll();
     }
 
@@ -184,6 +290,7 @@ public class TelegramOutbox {
     }
 
     // ── Worker ──
+
     private void workerLoop() {
         while (running) {
             Item item;
@@ -206,7 +313,7 @@ public class TelegramOutbox {
     }
 
     private Item pickReady(long now) {
-        Item i = pickFrom(interactive, now);   // interactive jumps ahead of bulk
+        Item i = pickFrom(interactive, now); // interactive jumps ahead of bulk
         return (i != null) ? i : pickFrom(bulk, now);
     }
 
@@ -219,7 +326,7 @@ public class TelegramOutbox {
             if (now < cs.pausedUntilMs) continue;
             if (now < cs.nextSendAtMs) continue;
             if (now < i.readyAt) continue;
-            it.remove();
+            it.remove(); // in-flight; file still holds it until commit (commit-after-success)
             return i;
         }
         return null;
@@ -242,8 +349,9 @@ public class TelegramOutbox {
     }
 
     // ── Dispatch & error policy ──
+
     private void dispatch(Item item) {
-        long dispatchNow = SystemClock.elapsedRealtime();   // ← pace reference
+        long dispatchNow = SystemClock.elapsedRealtime(); // pace reference = send START
         BaseResponse resp = null;
         RuntimeException failure = null;
         try {
@@ -286,7 +394,7 @@ public class TelegramOutbox {
             DebugLogger.log("Outbox sent ok: kind=" + item.kind + " chat=" + item.chatId
                     + " uploadMs=" + (now - dispatchNow)
                     + " depths i=" + depth(Lane.INTERACTIVE) + " b=" + depth(Lane.BULK));
-            // Step 2: persistence commit here. Step 3: WAV/stitched-file cleanup here.
+            persistIfBulk(item); // commit-after-success: remove from disk now
             return;
         }
 
@@ -301,7 +409,7 @@ public class TelegramOutbox {
                     + "s depths i=" + depth(Lane.INTERACTIVE) + " b=" + depth(Lane.BULK);
             DebugLogger.log(line);
             DebugLogger.logError(line + " | " + desc);
-            requeue(item);
+            requeue(item); // not an attempt; file already contains the item
             return;
         }
         if (code == 401 || code == 404) {
@@ -331,10 +439,12 @@ public class TelegramOutbox {
             DebugLogger.log("Outbox dropping item after " + item.attempts + " attempts: " + why);
             EventRepository.getInstance().addEvent(new LogEvent(LogEvent.Type.WARNING,
                     "Telegram send failed after " + item.attempts + " attempts"));
+            persistIfBulk(item); // commit the drop
             return;
         }
         item.readyAt = now + TRANSIENT_BACKOFF_MS;
         requeue(item);
+        persistIfBulk(item); // keep attempts count on disk
     }
 
     private void requeue(Item item) {
@@ -345,26 +455,24 @@ public class TelegramOutbox {
     }
 
     private void purgeChat(long chatId) {
-        List<Long> aliveTargets = new ArrayList<>();
         synchronized (lock) {
             interactive.removeIf(i -> i.chatId == chatId);
             bulk.removeIf(i -> i.chatId == chatId);
             DebugLogger.log("Outbox purged all pending items for dead chat " + chatId);
-            for (Long t : SettingsManager.getAllowedUserIds(appContext)) {
-                if (t.longValue() != chatId && !state(t.longValue()).dead) aliveTargets.add(t);
-            }
-            Long group = SettingsManager.getGroupChatIdLong(appContext);
-            if (group != null && group.longValue() != chatId && !state(group.longValue()).dead
-                    && !aliveTargets.contains(group)) {
-                aliveTargets.add(group);
-            }
+            persistBulkLocked();
         }
         EventRepository.getInstance().addEvent(new LogEvent(LogEvent.Type.WARNING,
                 "Bot removed/blocked in chat " + chatId + " — pending messages dropped"));
-        if (!kickNoticeSent && !aliveTargets.isEmpty()) {
+        if (!kickNoticeSent) {
             kickNoticeSent = true;
-            for (Long t : aliveTargets) {
-                enqueueText(t.longValue(), "⚠️ Bot was removed or blocked in chat " + chatId, null);
+            Long group = SettingsManager.getGroupChatIdLong(appContext);
+            for (Long t : SettingsManager.getAllowedUserIds(appContext)) {
+                if (t.longValue() != chatId && !state(t.longValue()).dead) {
+                    enqueueText(t.longValue(), "⚠️ Bot was removed or blocked in chat " + chatId, null);
+                }
+            }
+            if (group != null && group.longValue() != chatId && !state(group.longValue()).dead) {
+                enqueueText(group.longValue(), "⚠️ Bot was removed or blocked in chat " + chatId, null);
             }
         }
     }
