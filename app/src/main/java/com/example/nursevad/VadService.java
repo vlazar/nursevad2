@@ -18,6 +18,8 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.RandomAccessFile;
 import java.util.*;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class VadService extends Service {
     private static final String CHANNEL_ID = "VadServiceChannel";
@@ -53,6 +55,19 @@ public class VadService extends Service {
     private Map<Integer, String> lastPlayed = new HashMap<>();
 
     private Handler handler = new Handler(Looper.getMainLooper());
+
+    private ExecutorService finalizeExecutor;
+
+    private synchronized ExecutorService finalizeExecutor() {
+        if (finalizeExecutor == null) {
+            finalizeExecutor = Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "VadFinalize");
+                t.setDaemon(true);
+                return t;
+            });
+        }
+        return finalizeExecutor;
+    }
 
     // Queued Telegram media (voice messages and audio messages)
     private static class TelegramMedia {
@@ -510,8 +525,7 @@ public class VadService extends Service {
                         finalRecordedFile.getName().replaceAll("\\.wav$", "") + ".ogg");
                 DebugLogger.log("Transcoding speech WAV to Opus OGG...");
                 if (OpusTranscoder.transcodeWavToOpusOgg(finalRecordedFile, ogg)) {
-                    DebugLogger.log("Transcode OK: " + ogg.getName() + "; deleting source WAV");
-                    finalRecordedFile.delete();
+                    DebugLogger.log("Transcode OK: " + ogg.getName() + "; WAV retained until outbox commit");
                     artifact = ogg;
                     artifactUri = Uri.fromFile(ogg).toString();
                 } else {
@@ -599,7 +613,12 @@ public class VadService extends Service {
             }
         };
 
-        new Thread(finalizeEvent).start();
+        try {
+            finalizeExecutor().submit(finalizeEvent);
+        } catch (java.util.concurrent.RejectedExecutionException e) {
+            DebugLogger.log("Service stopping: finalize rejected by executor, using fallback thread");
+            new Thread(finalizeEvent, "VadFinalizeLate").start();
+        }
     }
 
     private int getLevel(int percent) {
@@ -1174,6 +1193,8 @@ public class VadService extends Service {
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
         if (audioRecord != null) audioRecord.stop();
         
+        if (finalizeExecutor != null) finalizeExecutor.shutdown();
+
         EventBus.getInstance().postVolume(0);
         EventBus.getInstance().postDebug("Vol: 0% | VAD Prob: 0,000");
         

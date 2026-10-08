@@ -17,17 +17,13 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
-/**
- * Two-lane outbox with a single paced worker.
- *  - INTERACTIVE (memory-only): texts, menu edits, warnings, notices.
- *  - BULK (persisted): speech-event audio; survives crashes via bulk_queue.json.
- * Bypassed entirely (never queued): answerCallbackQuery, getUpdates long-poll, inbound downloads.
- */
 public class TelegramOutbox {
 
     public enum Lane { INTERACTIVE, BULK }
@@ -46,29 +42,33 @@ public class TelegramOutbox {
         public String caption;
         public String title;
         public String performer;
-        // Stitching metadata (used from Step 3)
         public int level;
         public boolean isPoni;
         public String captionBody;
         public String wavPath;
         public long speechStartMs;
         public long speechEndMs;
-        // Runtime
         public int attempts;
         public long enqueuedAt = SystemClock.elapsedRealtime();
         public long readyAt;
+        // Stitch state
+        public boolean noStitch = false;
+        public List<Item> stitchMembers = null;   // head carries the group on retry
+        public String overrideFilePath = null;    // prebuilt stitched OGG on retry
+        public String stitchedCaption = null;
     }
 
-    public interface OutboxListener {
-        void onFatalGlobalError(String description); // 401/404 → stop the bot
-    }
+    public interface OutboxListener { void onFatalGlobalError(String description); }
 
-    // Hidden safe-pace constants
-    private static final long SAFE_INTERVAL_GROUP_MS = 3334; // ≈18 msg/min
-    private static final long SAFE_INTERVAL_DM_MS    = 1112; // ≈54 msg/min
+    private static final long SAFE_INTERVAL_GROUP_MS = 3334;
+    private static final long SAFE_INTERVAL_DM_MS    = 1112;
+    private static final int  SAFE_COUNT_GROUP = 18;   // per 60 s
+    private static final int  SAFE_COUNT_DM    = 54;   // per 60 s
     private static final long RETRY_PADDING_MS = 1000;
     private static final int  MAX_ATTEMPTS = 3;
     private static final long TRANSIENT_BACKOFF_MS = 1000;
+    private static final long PACE_WINDOW_MS = 60000;
+    private static final int  CAPTION_MAX = 1024;
 
     private static TelegramOutbox instance;
     public static synchronized TelegramOutbox getInstance() {
@@ -87,6 +87,7 @@ public class TelegramOutbox {
 
     private final ArrayDeque<Item> interactive = new ArrayDeque<>();
     private final ArrayDeque<Item> bulk = new ArrayDeque<>();
+    private final Map<Long, ArrayDeque<Long>> bulkEnqueueWindow = new HashMap<>();
 
     private static class ChatState {
         long nextSendAtMs = 0;
@@ -124,10 +125,9 @@ public class TelegramOutbox {
             running = false;
             lock.notifyAll();
         }
-        // Bulk state is already on disk (rewritten on every enqueue/removal).
     }
 
-    // ── Persistence (bulk lane only, commit-after-success) ──
+    // ── Persistence ──
 
     private void persistBulkLocked() {
         if (queueFile == null) return;
@@ -152,15 +152,12 @@ public class TelegramOutbox {
             }
             JSONObject root = new JSONObject();
             root.put("items", arr);
-
             File tmp = new File(queueFile.getAbsolutePath() + ".tmp");
             FileOutputStream fos = new FileOutputStream(tmp);
             fos.write(root.toString().getBytes(StandardCharsets.UTF_8));
             fos.getFD().sync();
             fos.close();
-            if (!tmp.renameTo(queueFile)) {
-                DebugLogger.log("Outbox persist: rename failed");
-            }
+            if (!tmp.renameTo(queueFile)) DebugLogger.log("Outbox persist: rename failed");
         } catch (Exception e) {
             DebugLogger.log("Outbox persist failed: " + e);
         }
@@ -168,6 +165,7 @@ public class TelegramOutbox {
 
     private void loadBulkLocked() {
         bulk.clear();
+        bulkEnqueueWindow.clear();
         if (queueFile == null || !queueFile.exists()) return;
         try {
             FileInputStream fis = new FileInputStream(queueFile);
@@ -203,7 +201,7 @@ public class TelegramOutbox {
                 i.speechStartMs = o.optLong("speechStartMs", 0);
                 i.speechEndMs = o.optLong("speechEndMs", 0);
                 i.attempts = o.optInt("attempts", 0);
-                i.enqueuedAt = now; // treat resumed backlog as fresh for the pace window
+                i.enqueuedAt = now;
                 bulk.addLast(i);
             }
             DebugLogger.log("Outbox loaded bulk queue: " + bulk.size() + " items, dropped " + dropped + " (missing artifacts)");
@@ -272,9 +270,14 @@ public class TelegramOutbox {
             return;
         }
         (i.lane == Lane.INTERACTIVE ? interactive : bulk).addLast(i);
+        if (i.lane == Lane.BULK) {
+            ArrayDeque<Long> w = bulkEnqueueWindow.get(i.chatId);
+            if (w == null) { w = new ArrayDeque<>(); bulkEnqueueWindow.put(i.chatId, w); }
+            w.addLast(SystemClock.elapsedRealtime());
+            persistBulkLocked();
+        }
         DebugLogger.log("Outbox enqueue: lane=" + i.lane + " kind=" + i.kind + " chat=" + i.chatId
                 + " depths i=" + interactive.size() + " b=" + bulk.size());
-        if (i.lane == Lane.BULK) persistBulkLocked();
         lock.notifyAll();
     }
 
@@ -284,27 +287,35 @@ public class TelegramOutbox {
         return cs;
     }
 
-    private long intervalFor(long chatId) {
+    private boolean isGroup(long chatId) {
         Long group = SettingsManager.getGroupChatIdLong(appContext);
-        return (group != null && group.longValue() == chatId) ? SAFE_INTERVAL_GROUP_MS : SAFE_INTERVAL_DM_MS;
+        return group != null && group.longValue() == chatId;
+    }
+
+    private long intervalFor(long chatId) {
+        return isGroup(chatId) ? SAFE_INTERVAL_GROUP_MS : SAFE_INTERVAL_DM_MS;
+    }
+
+    private int safeCountFor(long chatId) {
+        return isGroup(chatId) ? SAFE_COUNT_GROUP : SAFE_COUNT_DM;
     }
 
     // ── Worker ──
 
     private void workerLoop() {
         while (running) {
-            Item item;
+            List<Item> group;
             synchronized (lock) {
                 long now = SystemClock.elapsedRealtime();
-                item = pickReady(now);
-                if (item == null) {
+                group = pickReady(now);
+                if (group == null) {
                     long wait = computeWait(now);
                     try { lock.wait(wait); } catch (InterruptedException e) { break; }
                     continue;
                 }
             }
             try {
-                dispatch(item);
+                dispatch(group);
             } catch (Throwable t) {
                 DebugLogger.log("Outbox dispatch crash: " + t);
             }
@@ -312,12 +323,17 @@ public class TelegramOutbox {
         DebugLogger.log("Outbox worker stopped");
     }
 
-    private Item pickReady(long now) {
-        Item i = pickFrom(interactive, now); // interactive jumps ahead of bulk
-        return (i != null) ? i : pickFrom(bulk, now);
+    private List<Item> pickReady(long now) { // lock held
+        Item i = pickFrom(interactive, now);
+        if (i != null) {
+            List<Item> single = new ArrayList<>(1);
+            single.add(i);
+            return single;
+        }
+        return pickBulkGroup(now);
     }
 
-    private Item pickFrom(ArrayDeque<Item> deque, long now) {
+    private Item pickFrom(ArrayDeque<Item> deque, long now) { // lock held
         Iterator<Item> it = deque.iterator();
         while (it.hasNext()) {
             Item i = it.next();
@@ -326,15 +342,66 @@ public class TelegramOutbox {
             if (now < cs.pausedUntilMs) continue;
             if (now < cs.nextSendAtMs) continue;
             if (now < i.readyAt) continue;
-            it.remove(); // in-flight; file still holds it until commit (commit-after-success)
+            it.remove();
             return i;
         }
         return null;
     }
 
+    private List<Item> pickBulkGroup(long now) { // lock held
+        Item head = pickFrom(bulk, now);
+        if (head == null) return null;
+        List<Item> group = new ArrayList<>();
+        group.add(head);
+
+        if (head.kind == Kind.AUDIO && head.stitchMembers == null
+                && head.overrideFilePath == null && !head.noStitch
+                && stitchActiveLocked(head.chatId)) {
+            int k = computeK(head.chatId);
+            Iterator<Item> it = bulk.iterator();
+            while (it.hasNext() && group.size() < k) {
+                Item cand = it.next();
+                if (cand.kind == Kind.AUDIO && cand.chatId == head.chatId
+                        && cand.level == head.level && cand.isPoni == head.isPoni
+                        && !cand.noStitch && cand.stitchMembers == null && cand.overrideFilePath == null
+                        && cand.wavPath != null && new File(cand.wavPath).exists()) {
+                    it.remove();
+                    group.add(cand);
+                } else {
+                    break; // consecutive siblings only
+                }
+            }
+        }
+
+        if (group.size() > 1) {
+            head.stitchMembers = group;
+            DebugLogger.log("Outbox stitch group formed: chat=" + head.chatId
+                    + " size=" + group.size() + " level=" + head.level + " poni=" + head.isPoni);
+        }
+        return group;
+    }
+
+    private boolean stitchActiveLocked(long chatId) { // lock held
+        int depth = 1; // head already removed
+        for (Item i : bulk) if (i.chatId == chatId) depth++;
+        if (depth < 2) return false;
+        long now = SystemClock.elapsedRealtime();
+        ArrayDeque<Long> w = bulkEnqueueWindow.get(chatId);
+        if (w == null) return false;
+        while (!w.isEmpty() && now - w.peekFirst() > PACE_WINDOW_MS) w.pollFirst();
+        return w.size() > safeCountFor(chatId);
+    }
+
+    private int computeK(long chatId) { // lock held
+        int depth = 1;
+        for (Item i : bulk) if (i.chatId == chatId) depth++;
+        int k = (int) Math.ceil(depth / (double) safeCountFor(chatId));
+        return Math.max(2, k);
+    }
+
     private long computeWait(long now) {
         long min = Math.min(earliest(interactive), earliest(bulk));
-        if (min == Long.MAX_VALUE) return 30000; // idle heartbeat
+        if (min == Long.MAX_VALUE) return 30000;
         return Math.max(50, min - now);
     }
 
@@ -348,10 +415,15 @@ public class TelegramOutbox {
         return min;
     }
 
-    // ── Dispatch & error policy ──
+    // ── Dispatch ──
 
-    private void dispatch(Item item) {
-        long dispatchNow = SystemClock.elapsedRealtime(); // pace reference = send START
+    private void dispatch(List<Item> group) {
+        if (group.size() == 1) dispatchSingle(group.get(0));
+        else dispatchStitched(group);
+    }
+
+    private void dispatchSingle(Item item) {
+        long dispatchNow = SystemClock.elapsedRealtime();
         BaseResponse resp = null;
         RuntimeException failure = null;
         try {
@@ -381,26 +453,21 @@ public class TelegramOutbox {
         } catch (RuntimeException e) {
             failure = e;
         }
-
         long now = SystemClock.elapsedRealtime();
         ChatState cs = state(item.chatId);
 
-        if (failure != null) {
-            handleTransient(item, now, "exception: " + failure);
-            return;
-        }
+        if (failure != null) { handleTransient(item, now, "exception: " + failure); return; }
         if (resp.isOk()) {
             cs.nextSendAtMs = dispatchNow + intervalFor(item.chatId);
             DebugLogger.log("Outbox sent ok: kind=" + item.kind + " chat=" + item.chatId
                     + " uploadMs=" + (now - dispatchNow)
                     + " depths i=" + depth(Lane.INTERACTIVE) + " b=" + depth(Lane.BULK));
-            persistIfBulk(item); // commit-after-success: remove from disk now
+            if (item.kind == Kind.AUDIO) deleteMemberWav(item); // commit point
+            persistIfBulk(item);
             return;
         }
-
         int code = resp.errorCode();
         String desc = resp.description();
-
         if (code == 429) {
             int retryAfter = (resp.parameters() != null && resp.parameters().retryAfter() != null)
                     ? resp.parameters().retryAfter() : 0;
@@ -409,24 +476,135 @@ public class TelegramOutbox {
                     + "s depths i=" + depth(Lane.INTERACTIVE) + " b=" + depth(Lane.BULK);
             DebugLogger.log(line);
             DebugLogger.logError(line + " | " + desc);
-            requeue(item); // not an attempt; file already contains the item
+            requeue(item);
             return;
         }
-        if (code == 401 || code == 404) {
-            DebugLogger.logError("Permanent global " + code + " " + desc + " chat=" + item.chatId);
-            EventRepository.getInstance().addEvent(new LogEvent(LogEvent.Type.WARNING,
-                    "Telegram auth error " + code + " — bot stopped"));
-            running = false;
-            if (listener != null) listener.onFatalGlobalError(desc);
-            return;
-        }
-        if (code == 403 || code == 400) {
-            DebugLogger.logError("Permanent chat " + code + " " + desc + " chat=" + item.chatId);
-            cs.dead = true;
-            purgeChat(item.chatId);
-            return;
-        }
+        if (code == 401 || code == 404) { handleFatalGlobal(code, desc); return; }
+        if (code == 403 || code == 400) { cs.dead = true; purgeChat(item.chatId); return; }
         handleTransient(item, now, "http " + code + " " + desc);
+    }
+
+    private void dispatchStitched(List<Item> group) {
+        Item head = group.get(0);
+        long dispatchNow = SystemClock.elapsedRealtime();
+
+        String oggPath = head.overrideFilePath;
+        if (oggPath == null) {
+            File dir = new File(head.wavPath).getParentFile();
+            File sw = new File(dir, "stitched_" + System.currentTimeMillis() + ".wav");
+            File so = new File(sw.getAbsolutePath() + ".ogg");
+            boolean ok = SpeechStitcher.buildStitchedWav(group, sw);
+            if (ok) ok = OpusTranscoder.transcodeWavToOpusOgg(sw, so);
+            if (!ok) {
+                DebugLogger.log("Outbox stitch build/transcode failed; dissolving group size=" + group.size());
+                synchronized (lock) {
+                    head.noStitch = true;
+                    head.stitchMembers = null;
+                    for (int i = group.size() - 1; i >= 0; i--) bulk.addFirst(group.get(i));
+                    lock.notifyAll();
+                }
+                return;
+            }
+            if (sw.exists()) sw.delete();
+            oggPath = so.getAbsolutePath();
+            head.overrideFilePath = oggPath;
+            head.stitchedCaption = buildStitchedCaption(group);
+        }
+
+        boolean useEmb = SettingsManager.getUseEmbeddings(appContext);
+        String performer = (useEmb && !head.isPoni) ? "Client" : "Someone";
+
+        BaseResponse resp = null;
+        RuntimeException failure = null;
+        try {
+            SendAudio req = new SendAudio(head.chatId, new File(oggPath))
+                    .caption(head.stitchedCaption)
+                    .title("Speech Detected")
+                    .performer(performer);
+            resp = bot.execute(req);
+        } catch (RuntimeException e) {
+            failure = e;
+        }
+        long now = SystemClock.elapsedRealtime();
+        ChatState cs = state(head.chatId);
+
+        if (failure != null) { handleTransientStitched(head, now, "exception: " + failure); return; }
+        if (resp.isOk()) {
+            cs.nextSendAtMs = dispatchNow + intervalFor(head.chatId);
+            DebugLogger.log("Outbox sent ok STITCHED group=" + group.size()
+                    + " chat=" + head.chatId + " uploadMs=" + (now - dispatchNow)
+                    + " depths i=" + depth(Lane.INTERACTIVE) + " b=" + depth(Lane.BULK));
+            cleanupStitched(head);
+            synchronized (lock) { persistBulkLocked(); } // commit removal of all members
+            return;
+        }
+        int code = resp.errorCode();
+        String desc = resp.description();
+                if (code == 429) {
+            int retryAfter = (resp.parameters() != null && resp.parameters().retryAfter() != null)
+                    ? resp.parameters().retryAfter() : 0;
+            cs.pausedUntilMs = now + retryAfter * 1000L + RETRY_PADDING_MS;
+            String line = "Outbox 429: chat=" + item.chatId + " retry_after=" + retryAfter
+                    + "s depths i=" + depth(Lane.INTERACTIVE) + " b=" + depth(Lane.BULK);
+            DebugLogger.log(line);
+            DebugLogger.logError(line + " | " + desc);
+            requeue(head);
+            return;
+        }
+        if (code == 401 || code == 404) { handleFatalGlobal(code, desc); return; }
+        if (code == 403 || code == 400) { cs.dead = true; cleanupStitched(head); purgeChat(head.chatId); return; }
+        handleTransientStitched(head, now, "http " + code + " " + desc);
+    }
+
+    private void deleteMemberWav(Item i) {
+        if (i.wavPath != null && !i.wavPath.equals(i.filePath)) {
+            File f = new File(i.wavPath);
+            if (f.exists()) f.delete();
+        }
+    }
+
+    private void cleanupStitched(Item head) {
+        if (head.overrideFilePath != null) {
+            File ogg = new File(head.overrideFilePath);
+            if (ogg.exists()) ogg.delete();
+            String wavPath = head.overrideFilePath.endsWith(".ogg")
+                    ? head.overrideFilePath.substring(0, head.overrideFilePath.length() - 4) + ".wav"
+                    : null;
+            if (wavPath != null) { File w = new File(wavPath); if (w.exists()) w.delete(); }
+        }
+        if (head.stitchMembers != null) {
+            for (Item m : head.stitchMembers) deleteMemberWav(m);
+            head.stitchMembers = null;
+        }
+        head.overrideFilePath = null;
+    }
+
+    private void handleTransientStitched(Item head, long now, String why) {
+        head.attempts++;
+        DebugLogger.log("Outbox transient failure (stitched) attempt=" + head.attempts
+                + " chat=" + head.chatId + " : " + why);
+        DebugLogger.logError("Transient failure attempt=" + head.attempts + " kind=STITCHED_AUDIO"
+                + " chat=" + head.chatId + " : " + why);
+        if (head.attempts >= MAX_ATTEMPTS) {
+            DebugLogger.log("Outbox dropping stitched item after " + head.attempts + " attempts: " + why);
+            EventRepository.getInstance().addEvent(new LogEvent(LogEvent.Type.WARNING,
+                    "Telegram send failed after " + head.attempts + " attempts"));
+            cleanupStitched(head);
+            synchronized (lock) { persistBulkLocked(); }
+            return;
+        }
+        head.readyAt = now + TRANSIENT_BACKOFF_MS;
+        requeue(head);
+    }
+
+    // NOTE: 429 handling needs retry_after from the response; implemented inline below.
+
+    private void handleFatalGlobal(int code, String desc) {
+        DebugLogger.logError("Permanent global " + code + " " + desc);
+        EventRepository.getInstance().addEvent(new LogEvent(LogEvent.Type.WARNING,
+                "Telegram auth error " + code + " — bot stopped"));
+        running = false;
+        if (listener != null) listener.onFatalGlobalError(desc);
     }
 
     private void handleTransient(Item item, long now, String why) {
@@ -439,12 +617,12 @@ public class TelegramOutbox {
             DebugLogger.log("Outbox dropping item after " + item.attempts + " attempts: " + why);
             EventRepository.getInstance().addEvent(new LogEvent(LogEvent.Type.WARNING,
                     "Telegram send failed after " + item.attempts + " attempts"));
-            persistIfBulk(item); // commit the drop
+            if (item.kind == Kind.AUDIO) deleteMemberWav(item);
+            persistIfBulk(item);
             return;
         }
         item.readyAt = now + TRANSIENT_BACKOFF_MS;
         requeue(item);
-        persistIfBulk(item); // keep attempts count on disk
     }
 
     private void requeue(Item item) {
@@ -458,6 +636,7 @@ public class TelegramOutbox {
         synchronized (lock) {
             interactive.removeIf(i -> i.chatId == chatId);
             bulk.removeIf(i -> i.chatId == chatId);
+            bulkEnqueueWindow.remove(chatId);
             DebugLogger.log("Outbox purged all pending items for dead chat " + chatId);
             persistBulkLocked();
         }
@@ -481,5 +660,52 @@ public class TelegramOutbox {
         synchronized (lock) {
             return lane == Lane.INTERACTIVE ? interactive.size() : bulk.size();
         }
+    }
+
+    // ── Captions ──
+
+    private static String emojiFor(int level, boolean isPoni) {
+        if (isPoni) return "⚪️";
+        switch (level) {
+            case 1: return "🔵";
+            case 2: return "🟢";
+            case 3: return "🟡";
+            case 4: return "🟠";
+            case 5: return "🔴";
+            default: return "⚪️";
+        }
+    }
+
+    private static String circled(int n) {
+        if (n >= 1 && n <= 20) return String.valueOf((char) (0x2460 + n - 1));
+        if (n >= 21 && n <= 35) return String.valueOf((char) (0x3251 + n - 21));
+        if (n >= 36 && n <= 50) return String.valueOf((char) (0x32B1 + n - 36));
+        return "(" + n + ")";
+    }
+
+    private String buildStitchedCaption(List<Item> group) {
+        Item head = group.get(0);
+        List<String> lines = new ArrayList<>();
+        for (int i = 0; i < group.size(); i++) {
+            String prefix = (i == 0) ? (emojiFor(head.level, head.isPoni) + " ") : "";
+            lines.add(prefix + circled(i + 1) + " " + group.get(i).captionBody);
+        }
+        StringBuilder sb = new StringBuilder();
+        int included = 0;
+        for (String line : lines) {
+            int add = (sb.length() > 0 ? 1 : 0) + line.length();
+            if (sb.length() + add > CAPTION_MAX) break;
+            if (sb.length() > 0) sb.append("\n");
+            sb.append(line);
+            included++;
+        }
+        if (included < lines.size()) {
+            String suffix = "\n… +" + (lines.size() - included) + " more events";
+            if (sb.length() + suffix.length() > CAPTION_MAX) {
+                sb.setLength(CAPTION_MAX - suffix.length());
+            }
+            sb.append(suffix);
+        }
+        return sb.toString();
     }
 }
