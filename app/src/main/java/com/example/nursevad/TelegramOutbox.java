@@ -409,6 +409,12 @@ public class TelegramOutbox {
         return k;
     }
 
+    private int depthOf(long chatId) {
+      int d = 0;
+      for (Item i : bulk) if (i.chatId == chatId) d++;
+      return d;
+    }
+
     private long computeWait(long now) {
         long min = Math.min(earliest(interactive), earliest(bulk));
         if (min == Long.MAX_VALUE) return 30000;
