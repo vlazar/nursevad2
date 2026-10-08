@@ -37,8 +37,6 @@ public class VadService extends Service {
     private boolean isProcessingResponse = false;
     
     private long speechStartMs = 0;
-    private long speechStartWall = 0;
-    private long speechEndWall = 0;
     private double accumulatedRms = 0; 
     private int frameCount = 0;
     private int silenceFrames = 0;
@@ -370,7 +368,6 @@ public class VadService extends Service {
                         speechConfirmFrames = 0;
                         DebugLogger.log("Speech START confirmed after " + START_CONFIRM_FRAMES + " frames. prob=" + prob);
                         isSpeaking = true;
-                        speechStartWall = System.currentTimeMillis();
                         speechEnded = false;
                         speechStartMs = SystemClock.elapsedRealtime();
                         accumulatedRms = 0; frameCount = 0; silenceFrames = 0;
@@ -420,7 +417,6 @@ public class VadService extends Service {
             if (silenceFrames > 15 && !speechEnded) {
                 DebugLogger.log("Speech END detected. silenceFrames=" + silenceFrames);
                 speechEnded = true;
-                speechEndWall = System.currentTimeMillis();
                 isSpeaking = false;
                 speechConfirmFrames = 0;
                 
@@ -494,8 +490,6 @@ public class VadService extends Service {
         final String finalRecordedUri = recordedUri;
         final int finalLevel = level;
         final File finalRecordedFile = recordedFile;
-        final long finalStartWall = speechStartWall;
-        final long finalEndWall = speechEndWall;
 
         Runnable finalizeEvent = () -> {
             boolean isPoi = true;
@@ -505,15 +499,30 @@ public class VadService extends Service {
                 isPoi = SpeakerVerifier.getInstance(this).verify(recordedFile);
             }
 
-            LogEvent event = new LogEvent(LogEvent.Type.SPEECH, finalLevel, finalFile, finalRecordedUri);
+            File artifact = finalRecordedFile;
+            String artifactUri = finalRecordedUri;
+            if (finalRecordedFile != null && finalRecordedFile.exists()) {
+                File ogg = new File(finalRecordedFile.getParent(),
+                        finalRecordedFile.getName().replaceAll("\\.wav$", "") + ".ogg");
+                DebugLogger.log("Transcoding speech WAV to Opus OGG...");
+                if (OpusTranscoder.transcodeWavToOpusOgg(finalRecordedFile, ogg)) {
+                    DebugLogger.log("Transcode OK: " + ogg.getName() + "; deleting source WAV");
+                    finalRecordedFile.delete();
+                    artifact = ogg;
+                    artifactUri = Uri.fromFile(ogg).toString();
+                } else {
+                    DebugLogger.log("Transcode FAILED; keeping WAV and sending it instead");
+                }
+            }
+
+            LogEvent event = new LogEvent(LogEvent.Type.SPEECH, finalLevel, finalFile, artifactUri);
             event.isPoni = !isPoi;
             EventRepository.getInstance().addEvent(event);
 
-            if (finalRecordedFile != null && finalRecordedFile.exists()) {
+            if (artifact != null && artifact.exists()) {
                 String responseName = (finalFile != null) ? finalFile.displayName : null;
-                SpeechBatcher.getInstance(VadService.this).onSpeechEvent(
-                        finalLevel, !isPoi, responseName, finalRecordedFile, event,
-                        finalStartWall, finalEndWall);
+                TelegramManager.getInstance().sendAudioEvent(
+                        Uri.fromFile(artifact).toString(), finalLevel, responseName, !isPoi);
             }
 
             if (isPoi) {
@@ -1150,7 +1159,6 @@ public class VadService extends Service {
         pausedWasResponseCheck = false;
         EventBus.getInstance().postVadRunning(false); 
         
-        SpeechBatcher.getInstance(this).flushAll();
         handler.removeCallbacksAndMessages(null);
         if (responseCheckRunnable != null) {
             handler.removeCallbacks(responseCheckRunnable);

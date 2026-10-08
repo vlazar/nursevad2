@@ -53,18 +53,6 @@ public class TelegramManager {
         return instance;
     }
 
-    public static String emojiForLevel(int level, boolean isPoni) {
-        if (isPoni) return "⚪️";
-        switch (level) {
-            case 1:  return "🔵";
-            case 2:  return "🟢";
-            case 3:  return "🟡";
-            case 4:  return "🟠";
-            case 5:  return "🔴";
-            default: return "⚪️";
-        }
-    }
-
     public void start(Context context) {
         if (isRunning) return;
         appContext = context.getApplicationContext();
@@ -683,7 +671,19 @@ public class TelegramManager {
             File file = new File(wavUri.replace("file://", ""));
             if (!file.exists()) return;
 
-            String emoji = emojiForLevel(level, isPoni);
+            String emoji;
+            if (isPoni) {
+                emoji = "⚪️";
+            } else {
+                switch (level) {
+                    case 1:  emoji = "🔵"; break;
+                    case 2:  emoji = "🟢"; break;
+                    case 3:  emoji = "🟡"; break;
+                    case 4:  emoji = "🟠"; break;
+                    case 5:  emoji = "🔴"; break;
+                    default: emoji = "⚪️"; break;
+                }
+            }
 
             // Always show the response file name (or fallback); never "PONI is talking"
             String caption = emoji + " " + (responseFileName != null ? responseFileName : "No file found");
@@ -712,36 +712,6 @@ public class TelegramManager {
             }
         } catch (Exception e) {
             Log.e("TelegramManager", "Error preparing audio file", e);
-        }
-    }
-
-    public void sendBatchedAudioEvent(File file, int level, boolean isPoni, String caption) {
-        if (!isRunning || bot == null) return;
-        List<Long> targets = getBroadcastTargets();
-        if (targets.isEmpty()) return;
-        if (!file.exists()) return;
-
-        boolean useEmb = SettingsManager.getUseEmbeddings(appContext);
-        String performer = (useEmb && !isPoni) ? "Client" : "Someone";
-
-        for (Long chatId : targets) {
-            SendAudio sendAudio = new SendAudio(chatId, file)
-                    .caption(caption)
-                    .title("Speech Detected")
-                    .performer(performer);
-
-            bot.execute(sendAudio, new Callback<SendAudio, SendResponse>() {
-                @Override
-                public void onResponse(SendAudio request, SendResponse response) {
-                    if (!response.isOk()) {
-                        Log.e("TelegramManager", "Failed to send batched audio: " + response.description());
-                    }
-                }
-                @Override
-                public void onFailure(SendAudio request, IOException e) {
-                    Log.e("TelegramManager", "Network error sending batched audio", e);
-                }
-            });
         }
     }
 

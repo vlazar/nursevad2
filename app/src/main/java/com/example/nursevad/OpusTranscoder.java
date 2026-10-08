@@ -118,7 +118,7 @@ public class OpusTranscoder {
         }
     }
 
-    public static byte[] readPcm(File wav) throws IOException {
+    private static byte[] readPcm(File wav) throws IOException {
         FileInputStream in = new FileInputStream(wav);
         try {
             byte[] header = new byte[44];

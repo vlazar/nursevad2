@@ -42,10 +42,4 @@ public class EventRepository {
     }
 
     public MutableLiveData<List<LogEvent>> getLiveEvents() { return liveEvents; }
-
-    public void refresh() {
-        synchronized (masterList) {
-            liveEvents.postValue(new ArrayList<>(masterList));
-        }
-    }
 }
