@@ -40,6 +40,7 @@ public class TelegramService extends Service {
                 .build();
 
         startForeground(2, notification);
+        TelegramOutbox.getInstance().startWorker();
         TelegramManager.getInstance().start(this);
         return START_STICKY;
     }
@@ -47,6 +48,7 @@ public class TelegramService extends Service {
     @Override
     public void onDestroy() {
         TelegramManager.getInstance().stop();
+        TelegramOutbox.getInstance().shutdown();
         super.onDestroy();
     }
 

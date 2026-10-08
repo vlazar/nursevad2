@@ -3,6 +3,8 @@ package com.example.nursevad;
 import com.pengrad.telegrambot.request.GetUpdates;
 import com.pengrad.telegrambot.response.GetUpdatesResponse;
 import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.Response;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import android.Manifest;
@@ -41,6 +43,7 @@ import java.util.Set;
 public class TelegramManager {
     private static TelegramManager instance;
     private TelegramBot bot;
+    private TelegramOutbox outbox;
     private boolean isRunning = false;
     private Context appContext;
 
@@ -74,12 +77,38 @@ public class TelegramManager {
                     .connectTimeout(15, TimeUnit.SECONDS)
                     .readTimeout(40, TimeUnit.SECONDS)
                     .writeTimeout(30, TimeUnit.SECONDS)
+                    .addInterceptor(chain -> {
+                        Request req = chain.request();
+                        try {
+                            Response resp = chain.proceed(req);
+                            if (!resp.isSuccessful()) {
+                                String body = "";
+                                try { body = resp.peekBody(4096).string(); } catch (Exception ignored) {}
+                                DebugLogger.logError("HTTP " + resp.code() + " " + req.method() + " "
+                                        + DebugLogger.maskUrl(req.url().toString())
+                                        + " | reqHeaders=" + req.headers().toString().replace("\n", " ")
+                                        + " | respHeaders=" + resp.headers().toString().replace("\n", " ")
+                                        + " | body=" + body);
+                            }
+                            return resp;
+                        } catch (IOException e) {
+                            DebugLogger.logError("IO failure " + req.method() + " "
+                                    + DebugLogger.maskUrl(req.url().toString())
+                                    + " | reqHeaders=" + req.headers().toString().replace("\n", " ")
+                                    + " | ex=" + e);
+                            throw e;
+                        }
+                    })
                     .build();
             client.dispatcher().setMaxRequests(64);
             client.dispatcher().setMaxRequestsPerHost(32);
 
             bot = new TelegramBot.Builder(token).okHttpClient(client).build();
             isRunning = true;
+
+            outbox = TelegramOutbox.getInstance();
+            outbox.attach(bot, appContext, desc -> stop());
+            outbox.startWorker();
 
             startPolling();
 
@@ -138,6 +167,7 @@ public class TelegramManager {
     }
 
     public void stop() {
+        if (outbox != null) outbox.shutdown();
         pollingStopped = true;
         if (pollingThread != null) {
             pollingThread.interrupt();
@@ -183,24 +213,11 @@ public class TelegramManager {
     }
 
     private void sendToChat(long chatId, String text) {
-        bot.execute(new SendMessage(chatId, text), new Callback<SendMessage, SendResponse>() {
-            @Override
-            public void onResponse(SendMessage request, SendResponse response) {
-                if (!response.isOk()) {
-                    Log.e("TelegramManager", "Failed to send: " + response.description());
-                }
-            }
-            @Override
-            public void onFailure(SendMessage request, IOException e) {
-                Log.e("TelegramManager", "Network error sending", e);
-            }
-        });
+        if (outbox != null) outbox.enqueueText(chatId, text, null);
     }
 
     private void broadcastMessage(String text) {
-        for (Long chatId : getBroadcastTargets()) {
-            sendToChat(chatId, text);
-        }
+        for (Long chatId : getBroadcastTargets()) sendToChat(chatId, text);
     }
 
     private void notifyOtherUsers(long excludeUserId, String message) {
@@ -211,11 +228,10 @@ public class TelegramManager {
         }
         Set<Long> allowedIds = SettingsManager.getAllowedUserIds(appContext);
         for (Long chatId : allowedIds) {
-            if (chatId != excludeUserId) {
-                sendToChat(chatId, message);
-            }
+            if (chatId.longValue() != excludeUserId) sendToChat(chatId, message);
         }
     }
+
 
     // ─── Start / Stop with optimistic state ───
 
@@ -471,11 +487,15 @@ public class TelegramManager {
         );
     }
 
+    private void editMessage(long chatId, int messageId, String text) {
+        if (outbox != null) outbox.enqueueEdit(chatId, messageId, text, null);
+    }
+
     private void sendMainMenu(long chatId, int replyToId) {
-        SendMessage msg = new SendMessage(chatId, mainMenuText())
-                .replyMarkup(buildMainMenuMarkup(VadService.isVadListening));
-        if (replyToId > 0) msg.replyToMessageId(replyToId);
-        bot.execute(msg);
+        if (outbox != null) {
+            outbox.enqueueText(chatId, mainMenuText(),
+                    buildMainMenuMarkup(VadService.isVadListening), replyToId);
+        }
     }
 
     private void editMainMenu(long chatId, int messageId) {
@@ -483,9 +503,9 @@ public class TelegramManager {
     }
 
     private void editMainMenuWithState(long chatId, int messageId, boolean listening) {
-        EditMessageText edit = new EditMessageText(chatId, messageId, mainMenuText())
-                .replyMarkup(buildMainMenuMarkup(listening));
-        bot.execute(edit);
+        if (outbox != null) {
+            outbox.enqueueEdit(chatId, messageId, mainMenuText(), buildMainMenuMarkup(listening));
+        }
     }
 
     // ─── Settings menu ───
@@ -578,8 +598,7 @@ public class TelegramManager {
                 new InlineKeyboardButton[]{ new InlineKeyboardButton("🔙 Back").callbackData("back_main") }
         );
 
-        EditMessageText edit = new EditMessageText(chatId, messageId, text).replyMarkup(markup);
-        bot.execute(edit);
+        if (outbox != null) outbox.enqueueEdit(chatId, messageId, text, markup);
     }
 
     // ─── Voice message download with retry ───
@@ -662,63 +681,43 @@ public class TelegramManager {
 
     // ─── Outgoing event messages ───
 
-    public void sendAudioEvent(String wavUri, int level, String responseFileName, boolean isPoni) {
-        if (!isRunning || bot == null) return;
+    public void sendAudioEvent(String artifactPath, String wavPath, int level,
+                               String responseFileName, boolean isPoni,
+                               long speechStartMs, long speechEndMs) {
+        if (!isRunning || bot == null || outbox == null) return;
         List<Long> targets = getBroadcastTargets();
         if (targets.isEmpty()) return;
 
-        try {
-            File file = new File(wavUri.replace("file://", ""));
-            if (!file.exists()) return;
+        File file = new File(artifactPath);
+        if (!file.exists()) return;
 
-            String emoji;
-            if (isPoni) {
-                emoji = "⚪️";
-            } else {
-                switch (level) {
-                    case 1:  emoji = "🔵"; break;
-                    case 2:  emoji = "🟢"; break;
-                    case 3:  emoji = "🟡"; break;
-                    case 4:  emoji = "🟠"; break;
-                    case 5:  emoji = "🔴"; break;
-                    default: emoji = "⚪️"; break;
-                }
+        String emoji;
+        if (isPoni) {
+            emoji = "⚪️";
+        } else {
+            switch (level) {
+                case 1:  emoji = "🔵"; break;
+                case 2:  emoji = "🟢"; break;
+                case 3:  emoji = "🟡"; break;
+                case 4:  emoji = "🟠"; break;
+                case 5:  emoji = "🔴"; break;
+                default: emoji = "⚪️"; break;
             }
+        }
+        String captionBody = (responseFileName != null) ? responseFileName : "No file found";
+        String caption = emoji + " " + captionBody;
 
-            // Always show the response file name (or fallback); never "PONI is talking"
-            String caption = emoji + " " + (responseFileName != null ? responseFileName : "No file found");
+        boolean useEmb = SettingsManager.getUseEmbeddings(appContext);
+        String performer = (useEmb && !isPoni) ? "Client" : "Someone";
 
-            boolean useEmb = SettingsManager.getUseEmbeddings(appContext);
-            String performer = (useEmb && !isPoni) ? "Client" : "Someone";
-
-            for (Long chatId : targets) {
-                SendAudio sendAudio = new SendAudio(chatId, file)
-                        .caption(caption)
-                        .title("Speech Detected")
-                        .performer(performer);
-
-                bot.execute(sendAudio, new Callback<SendAudio, SendResponse>() {
-                    @Override
-                    public void onResponse(SendAudio request, SendResponse response) {
-                        if (!response.isOk()) {
-                            Log.e("TelegramManager", "Failed to send audio: " + response.description());
-                        }
-                    }
-                    @Override
-                    public void onFailure(SendAudio request, IOException e) {
-                        Log.e("TelegramManager", "Network error sending audio", e);
-                    }
-                });
-            }
-        } catch (Exception e) {
-            Log.e("TelegramManager", "Error preparing audio file", e);
+        for (Long chatId : targets) {
+            outbox.enqueueAudio(chatId, file.getAbsolutePath(), caption, "Speech Detected", performer,
+                    level, isPoni, captionBody, wavPath, speechStartMs, speechEndMs);
         }
     }
 
     public void sendTextMessage(String text) {
         if (!isRunning || bot == null) return;
-        for (Long chatId : getBroadcastTargets()) {
-            sendToChat(chatId, text);
-        }
+        for (Long chatId : getBroadcastTargets()) sendToChat(chatId, text);
     }
 }

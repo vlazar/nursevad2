@@ -37,6 +37,7 @@ public class VadService extends Service {
     private boolean isProcessingResponse = false;
     
     private long speechStartMs = 0;
+    private long speechEndMs = 0;
     private double accumulatedRms = 0; 
     private int frameCount = 0;
     private int silenceFrames = 0;
@@ -417,6 +418,7 @@ public class VadService extends Service {
             if (silenceFrames > 15 && !speechEnded) {
                 DebugLogger.log("Speech END detected. silenceFrames=" + silenceFrames);
                 speechEnded = true;
+                speechEndMs = SystemClock.elapsedRealtime();
                 isSpeaking = false;
                 speechConfirmFrames = 0;
                 
@@ -490,6 +492,8 @@ public class VadService extends Service {
         final String finalRecordedUri = recordedUri;
         final int finalLevel = level;
         final File finalRecordedFile = recordedFile;
+        final long finalStartMs = speechStartMs;
+        final long finalEndMs = speechEndMs;
 
         Runnable finalizeEvent = () -> {
             boolean isPoi = true;
@@ -522,7 +526,9 @@ public class VadService extends Service {
             if (artifact != null && artifact.exists()) {
                 String responseName = (finalFile != null) ? finalFile.displayName : null;
                 TelegramManager.getInstance().sendAudioEvent(
-                        Uri.fromFile(artifact).toString(), finalLevel, responseName, !isPoi);
+                        artifact.getAbsolutePath(),
+                        (finalRecordedFile != null) ? finalRecordedFile.getAbsolutePath() : null,
+                        finalLevel, responseName, !isPoi, finalStartMs, finalEndMs);
             }
 
             if (isPoi) {
