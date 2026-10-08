@@ -93,9 +93,12 @@ public class TelegramOutbox {
         long nextSendAtMs = 0;
         long pausedUntilMs = 0;
         boolean dead = false;
+        boolean wasPaused = false;   // NEW: for resume-after-429 logging
     }
     private final Map<Long, ChatState> chats = new HashMap<>();
     private boolean kickNoticeSent = false;
+    private long lastHeartbeatMs = 0;
+    private boolean wasNonEmpty = false;
 
     public void attach(TelegramBot bot, Context context, OutboxListener listener) {
         this.bot = bot;
@@ -277,6 +280,7 @@ public class TelegramOutbox {
             persistBulkLocked();
         }
         DebugLogger.log("Outbox enqueue: lane=" + i.lane + " kind=" + i.kind + " chat=" + i.chatId
+                + (isGroup(i.chatId) ? "(group)" : "(dm)")
                 + " depths i=" + interactive.size() + " b=" + bulk.size());
         lock.notifyAll();
     }
@@ -307,6 +311,19 @@ public class TelegramOutbox {
             List<Item> group;
             synchronized (lock) {
                 long now = SystemClock.elapsedRealtime();
+                long nowMs = SystemClock.elapsedRealtime();
+                int di = depth(Lane.INTERACTIVE);
+                int db = depth(Lane.BULK);
+                if (di + db > 0) {
+                    wasNonEmpty = true;
+                    if (nowMs - lastHeartbeatMs >= 300000) {   // 5-minute heartbeat while non-empty
+                        lastHeartbeatMs = nowMs;
+                        DebugLogger.log("Outbox heartbeat: depths i=" + di + " b=" + db);
+                    }
+                } else if (wasNonEmpty) {
+                    wasNonEmpty = false;
+                    DebugLogger.log("Outbox drained: all lanes empty");
+                }
                 group = pickReady(now);
                 if (group == null) {
                     long wait = computeWait(now);
@@ -375,11 +392,12 @@ public class TelegramOutbox {
 
         if (group.size() > 1) {
             head.stitchMembers = group;
+            int k = computeK(head.chatId);
+            StringBuilder mb = new StringBuilder();
+            for (Item m : group) { if (mb.length() > 0) mb.append(","); mb.append(m.speechStartMs); }
             DebugLogger.log("Outbox stitch group formed: chat=" + head.chatId
                     + " size=" + group.size() + " level=" + head.level + " poni=" + head.isPoni
-                    + " k=" + computeK(head.chatId)
-                    + " rate60s=" + (bulkEnqueueWindow.get(head.chatId) == null ? 0 : bulkEnqueueWindow.get(head.chatId).size())
-                    + " depth=" + depthOf(head.chatId));
+                    + " k=" + k + " membersStartMs=[" + mb + "]");
         }
         return group;
     }
@@ -440,6 +458,11 @@ public class TelegramOutbox {
 
     private void dispatchSingle(Item item) {
         long dispatchNow = SystemClock.elapsedRealtime();
+        ChatState cst = state(item.chatId);
+        if (cst.wasPaused) {
+            cst.wasPaused = false;
+            DebugLogger.log("Outbox resumed sending to chat=" + cst + " after 429 pause");
+        }
         BaseResponse resp = null;
         RuntimeException failure = null;
         try {
@@ -488,6 +511,7 @@ public class TelegramOutbox {
             int retryAfter = (resp.parameters() != null && resp.parameters().retryAfter() != null)
                     ? resp.parameters().retryAfter() : 0;
             cs.pausedUntilMs = now + retryAfter * 1000L + RETRY_PADDING_MS;
+            cs.wasPaused = true;
             String line = "Outbox 429: chat=" + item.chatId + " retry_after=" + retryAfter
                     + "s depths i=" + depth(Lane.INTERACTIVE) + " b=" + depth(Lane.BULK);
             DebugLogger.log(line);
@@ -503,6 +527,11 @@ public class TelegramOutbox {
     private void dispatchStitched(List<Item> group) {
         Item head = group.get(0);
         long dispatchNow = SystemClock.elapsedRealtime();
+        ChatState cst = state(head.chatId);
+        if (cst.wasPaused) {
+            cst.wasPaused = false;
+            DebugLogger.log("Outbox resumed sending to chat=" + cst + " after 429 pause");
+        }
 
         String oggPath = head.overrideFilePath;
         if (oggPath == null) {
@@ -560,6 +589,7 @@ public class TelegramOutbox {
             int retryAfter = (resp.parameters() != null && resp.parameters().retryAfter() != null)
                     ? resp.parameters().retryAfter() : 0;
             cs.pausedUntilMs = now + retryAfter * 1000L + RETRY_PADDING_MS;
+            cs.wasPaused = true;
             String line = "Outbox 429: chat=" + head.chatId + " retry_after=" + retryAfter
                     + "s depths i=" + depth(Lane.INTERACTIVE) + " b=" + depth(Lane.BULK);
             DebugLogger.log(line);

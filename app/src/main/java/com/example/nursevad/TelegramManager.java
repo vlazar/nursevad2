@@ -720,4 +720,52 @@ public class TelegramManager {
         if (!isRunning || bot == null) return;
         for (Long chatId : getBroadcastTargets()) sendToChat(chatId, text);
     }
+
+    /** Field-test hook: enqueue N synthetic same-level speech events to exercise pacing/stitching. */
+    public void debugBurst(int count, int level) {
+        DebugLogger.log("DebugBurst: generating " + count + " synthetic events at level " + level);
+        File dir = VadService.getAudioDir(appContext);
+        long base = android.os.SystemClock.elapsedRealtime();
+        for (int i = 0; i < count; i++) {
+            try {
+                File wav = new File(dir, "debug_burst_" + System.currentTimeMillis() + "_" + i + ".wav");
+                writeSilentWav(wav, 1000);
+                File ogg = new File(wav.getAbsolutePath() + ".ogg");
+                if (!OpusTranscoder.transcodeWavToOpusOgg(wav, ogg)) {
+                    DebugLogger.log("DebugBurst: transcode failed for " + wav.getName() + "; skipping");
+                    wav.delete();
+                    continue;
+                }
+                long startMs = base + i * 1500L;  // 1.5 s apart → 500 ms stitched silence gaps
+                long endMs = startMs + 1000L;
+                sendAudioEvent(ogg.getAbsolutePath(), wav.getAbsolutePath(), level,
+                        "Debug burst " + (i + 1), false, startMs, endMs);
+            } catch (Exception e) {
+                DebugLogger.log("DebugBurst error: " + e);
+            }
+        }
+        DebugLogger.log("DebugBurst: finished enqueuing " + count + " synthetic events");
+    }
+
+    private void writeSilentWav(File f, int millis) throws IOException {
+        int dataLen = millis * 32; // 16 kHz mono 16-bit = 32 bytes/ms
+        FileOutputStream out = new FileOutputStream(f);
+        byte[] h = new byte[44];
+        h[0]='R'; h[1]='I'; h[2]='F'; h[3]='F';
+        int chunk = dataLen + 36;
+        h[4]=(byte)(chunk & 0xff); h[5]=(byte)((chunk>>8)&0xff); h[6]=(byte)((chunk>>16)&0xff); h[7]=(byte)((chunk>>24)&0xff);
+        h[8]='W'; h[9]='A'; h[10]='V'; h[11]='E';
+        h[12]='f'; h[13]='m'; h[14]='t'; h[15]=' ';
+        h[16]=16; h[20]=1; h[22]=1;
+        h[24]=(byte)(16000 & 0xff); h[25]=(byte)((16000>>8)&0xff); h[26]=(byte)((16000>>16)&0xff); h[27]=(byte)((16000>>24)&0xff);
+        h[28]=(byte)(32000 & 0xff); h[29]=(byte)((32000>>8)&0xff); h[30]=(byte)((32000>>16)&0xff); h[31]=(byte)((32000>>24)&0xff);
+        h[32]=2; h[34]=16;
+        h[36]='d'; h[37]='a'; h[38]='t'; h[39]='a';
+        h[40]=(byte)(dataLen & 0xff); h[41]=(byte)((dataLen>>8)&0xff); h[42]=(byte)((dataLen>>16)&0xff); h[43]=(byte)((dataLen>>24)&0xff);
+        out.write(h);
+        byte[] zero = new byte[4096];
+        int left = dataLen;
+        while (left > 0) { int n = Math.min(zero.length, left); out.write(zero, 0, n); left -= n; }
+        out.close();
+    }
 }

@@ -32,6 +32,17 @@ public class TelegramService extends Service {
             return START_NOT_STICKY;
         }
 
+        if (intent != null && "DEBUG_BURST".equals(intent.getAction())) {
+            if (BuildConfig.DEBUG) {
+                final int count = intent.getIntExtra("count", 25);
+                final int level = intent.getIntExtra("level", 3);
+                new Thread(() -> TelegramManager.getInstance().debugBurst(count, level), "DebugBurst").start();
+            } else {
+                DebugLogger.log("DEBUG_BURST ignored in release build");
+            }
+            return START_STICKY;
+        }
+
         Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
                 .setContentTitle("Nurse VAD Bot")
                 .setContentText("Connected to Telegram")
