@@ -36,7 +36,7 @@ public class SpeakerVerifier {
         try {
             String modelPath = copyAssetToCache(MODEL_NAME);
             OrtSession.SessionOptions options = new OrtSession.SessionOptions();
-            // options.addNnapi(); // Uncomment for NNAPI acceleration if supported
+            options.addNnapi(); // Uncomment for NNAPI acceleration if supported
             session = ortEnv.createSession(modelPath, options);
         } catch (Exception e) {
             Log.e(TAG, "Failed to initialize ONNX session", e);
