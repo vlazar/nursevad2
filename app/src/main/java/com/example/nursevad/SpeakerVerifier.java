@@ -49,6 +49,7 @@ public class SpeakerVerifier {
             opts.setIntraOpNumThreads(1);
             opts.setInterOpNumThreads(1);
             opts.addCPU(true);
+            opts.addNnapi(); // Uncomment for NNAPI acceleration if supported on your target devices
             String modelPath = copyAssetToCache(MODEL_NAME);
             if (modelPath != null) {
                 session = env.createSession(modelPath, opts);
