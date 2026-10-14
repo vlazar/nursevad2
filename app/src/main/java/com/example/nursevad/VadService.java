@@ -13,6 +13,7 @@ import androidx.core.app.NotificationCompat;
 import androidx.core.content.ContextCompat;
 import androidx.documentfile.provider.DocumentFile;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.PrintWriter;
@@ -46,6 +47,38 @@ public class VadService extends Service {
 
     private static final int START_CONFIRM_FRAMES = 4; // ~128 ms of sustained prob > 0.5
     private int speechConfirmFrames = 0;
+
+    // ─── Sliding-context verification (short utterances) ───
+    private static final long MIN_RELIABLE_SPEECH_MS = 3000;
+    private static final long CONTEXT_FLUSH_WAIT_MS = 4000;
+    private volatile long voicedMsAccum = 0;
+    private final Object pendingLock = new Object();
+    private PendingEvent pendingEvent = null;
+    private Runnable contextFlushRunnable = null;
+    private UtteranceMeta lastUtterance = null;
+
+    private static class UtteranceMeta {
+        File wav;
+        long startMs;
+        long endMs;
+        boolean isPoi;   // provisional class
+    }
+
+    private static class EmitData {
+        AudioFile responseFile;
+        File artifactFile;
+        String artifactUri;
+        File wavFile;
+        int level;
+        long startMs;
+        long endMs;
+    }
+
+    private static class PendingEvent {
+        UtteranceMeta self;
+        UtteranceMeta prev;   // snapshot of the utterance before self
+        EmitData data;
+    }
 
     private FileOutputStream fos;
     private File recordedFile;
@@ -387,6 +420,7 @@ public class VadService extends Service {
                         speechEnded = false;
                         speechStartMs = SystemClock.elapsedRealtime();
                         accumulatedRms = 0; frameCount = 0; silenceFrames = 0;
+                        voicedMsAccum = 0;
 
                         pauseReminderTimer();
 
@@ -427,6 +461,7 @@ public class VadService extends Service {
 
             accumulatedRms += rms;
             frameCount++;
+            if (prob >= 0.4f) voicedMsAccum += 32;   // 512 samples @16kHz = 32 ms
             if (prob < 0.4) silenceFrames++;
             else silenceFrames = 0;
 
@@ -509,108 +544,95 @@ public class VadService extends Service {
         final File finalRecordedFile = recordedFile;
         final long finalStartMs = speechStartMs;
         final long finalEndMs = speechEndMs;
+        final long finalVoicedMs = voicedMsAccum;
 
         Runnable finalizeEvent = () -> {
-            boolean isPoi = true;
-            String embUri = SettingsManager.getEmbeddingsFolderUri(this);
-            boolean useEmbeddings = SettingsManager.getUseEmbeddings(this);
-            if (useEmbeddings && embUri != null && recordedFile != null && recordedFile.exists()) {
-                isPoi = SpeakerVerifier.getInstance(this).verify(recordedFile);
+            DebugLogger.log("finalizeEvent START. thread=" + Thread.currentThread().getName());
+
+            File wavFile = finalRecordedFile;
+            boolean embeddingsOn = SettingsManager.getUseEmbeddings(this)
+                    && SettingsManager.getEmbeddingsFolderUri(this) != null
+                    && wavFile != null && wavFile.exists();
+
+            // Provisional pass (also the final pass for reliable-length utterances)
+            boolean provisionalPoi = true;
+            if (embeddingsOn) {
+                provisionalPoi = SpeakerVerifier.getInstance(this).verify(wavFile);
             }
 
-            File artifact = finalRecordedFile;
+            // Transcode as before; WAV retained until outbox commit
+            File artifactFile = wavFile;
             String artifactUri = finalRecordedUri;
-            if (finalRecordedFile != null && finalRecordedFile.exists()) {
-                File ogg = new File(finalRecordedFile.getParent(),
-                        finalRecordedFile.getName().replaceAll("\\.wav$", "") + ".ogg");
+            if (wavFile != null && wavFile.exists()) {
                 DebugLogger.log("Transcoding speech WAV to Opus OGG...");
-                if (OpusTranscoder.transcodeWavToOpusOgg(finalRecordedFile, ogg)) {
+                File ogg = new File(wavFile.getParent(), wavFile.getName().replaceAll("\\.wav$", "") + ".ogg");
+                if (OpusTranscoder.transcodeWavToOpusOgg(wavFile, ogg)) {
                     DebugLogger.log("Transcode OK: " + ogg.getName() + "; WAV retained until outbox commit");
-                    artifact = ogg;
+                    artifactFile = ogg;
                     artifactUri = Uri.fromFile(ogg).toString();
                 } else {
                     DebugLogger.log("Transcode FAILED; keeping WAV and sending it instead");
                 }
             }
 
-            LogEvent event = new LogEvent(LogEvent.Type.SPEECH, finalLevel, finalFile, artifactUri);
-            event.isPoni = !isPoi;
-            EventRepository.getInstance().addEvent(event);
+            UtteranceMeta meta = new UtteranceMeta();
+            meta.wav = wavFile;
+            meta.startMs = finalStartMs;
+            meta.endMs = finalEndMs;
+            meta.isPoi = provisionalPoi;
+            UtteranceMeta prevMeta;
+            synchronized (pendingLock) { prevMeta = lastUtterance; lastUtterance = meta; }
 
-            if (artifact != null && artifact.exists()) {
-                String responseName = (finalFile != null) ? finalFile.displayName : null;
-                TelegramManager.getInstance().sendAudioEvent(
-                        artifact.getAbsolutePath(),
-                        (finalRecordedFile != null) ? finalRecordedFile.getAbsolutePath() : null,
-                        finalLevel, responseName, !isPoi, finalStartMs, finalEndMs);
+            EmitData d = new EmitData();
+            d.responseFile = finalFile;
+            d.artifactFile = artifactFile;
+            d.artifactUri = artifactUri;
+            d.wavFile = wavFile;
+            d.level = finalLevel;
+            d.startMs = finalStartMs;
+            d.endMs = finalEndMs;
+
+            // Flush any previous pending event, offering this utterance as its "next" neighbor
+            PendingEvent toFlush = null;
+            synchronized (pendingLock) {
+                if (pendingEvent != null) {
+                    toFlush = pendingEvent;
+                    pendingEvent = null;
+                    if (contextFlushRunnable != null) {
+                        handler.removeCallbacks(contextFlushRunnable);
+                        contextFlushRunnable = null;
+                    }
+                }
             }
+            if (toFlush != null) resolvePendingEmit(toFlush, meta);
 
-            if (isPoi) {
-                // ─── POI responded: fully reset the repeat-reminder sequence ───
-                // Any POI speech event after a Repeat file was played must restart
-                // the sequence from the FIRST file in Reminder/Repeat next time.
-                if (repeatReminderIndex != 0 || userDidNotRespondToReminder || waitingForResponseAfterReminder) {
-                    DebugLogger.log("POI speech event: resetting Repeat sequence (index was "
-                            + repeatReminderIndex + ", unanswered=" + userDidNotRespondToReminder + ").");
-                }
-                repeatReminderIndex = 0;
-                userDidNotRespondToReminder = false;
-                if (responseCheckRunnable != null) {
-                    handler.removeCallbacks(responseCheckRunnable);
-                    responseCheckRunnable = null;
-                }
-                waitingForResponseAfterReminder = false;
-
-                boolean playedSomething = false;
-                if (SettingsManager.getReminderTrigger(this) == 0) {
-                    if (isReminderArmed) {
-                        playReminder();
-                        isReminderArmed = false;
-                        scheduleReminder();
-                        playedSomething = true;
-                    }
-                } else if (SettingsManager.getReminderTrigger(this) == 1) {
-                    pausedRemainingMs = -1;          // POI = real response → brand-new delay
-                    scheduleReminder();
-                    DebugLogger.log("POI speech: reminder timer reset with fresh delay.");
-                }
-
-                if (!playedSomething && finalFile != null) {
-                    if (SettingsManager.isSilentMode(this)) {
-                        EventBus.getInstance().postStatus("Listening... (Silent)");
-                    } else {
-                        triggerPlay(finalFile);
-                        playedSomething = true;
-                    }
-                }
-
-                if (!playedSomething) {
-                    isPaused = false;
-                    isProcessingResponse = false;
-                    if (!telegramVoiceQueue.isEmpty()) {
-                        playNextTelegramVoice();
-                    } else {
-                        if (finalFile == null) {
-                            EventBus.getInstance().postStatus("Listening... (No files in Level " + finalLevel + ")");
-                        } else {
-                            EventBus.getInstance().postStatus("Listening...");
-                        }
-                    }
-                }
+            // Decide: emit now or wait for context
+            if (!embeddingsOn || finalVoicedMs >= MIN_RELIABLE_SPEECH_MS) {
+                emitEvent(d, provisionalPoi);
             } else {
-                // ─── PONI: do NOT touch the reminder timer at all ───
-                // The reminder countdown continues unaffected.
-                // Only reset playback state so the mic resumes listening.
-                DebugLogger.log("finalizeEvent: PONI detected. Reminder timer left untouched.");
-                isPaused = false;
-                isProcessingResponse = false;
-                if (!telegramVoiceQueue.isEmpty()) {
-                    playNextTelegramVoice();
-                } else {
-                    EventBus.getInstance().postStatus("Listening...");
-                    resumeReminderTimer();   // PONI: resume with remaining time (invisible)
+                PendingEvent p = new PendingEvent();
+                p.self = meta;
+                p.prev = prevMeta;
+                p.data = d;
+                synchronized (pendingLock) {
+                    pendingEvent = p;
+                    contextFlushRunnable = () -> {
+                        boolean mine;
+                        synchronized (pendingLock) {
+                            mine = (pendingEvent == p);
+                            if (mine) { pendingEvent = null; contextFlushRunnable = null; }
+                        }
+                        if (mine) {
+                            DebugLogger.log("Context: flush timeout, emitting pending event without next neighbor");
+                            finalizeExecutor().submit(() -> resolvePendingEmit(p, null));
+                        }
+                    };
+                    handler.postDelayed(contextFlushRunnable, CONTEXT_FLUSH_WAIT_MS);
                 }
+                DebugLogger.log("Context: pending short event speechMs=" + finalVoicedMs
+                        + " class=" + (provisionalPoi ? "POI" : "PONI"));
             }
+            DebugLogger.log("finalizeEvent END");
         };
 
         try {
@@ -618,6 +640,164 @@ public class VadService extends Service {
         } catch (java.util.concurrent.RejectedExecutionException e) {
             DebugLogger.log("Service stopping: finalize rejected by executor, using fallback thread");
             new Thread(finalizeEvent, "VadFinalizeLate").start();
+        }
+    }
+
+    /** The old post-verification finalize body, parameterized by the final verdict. */
+    private void emitEvent(EmitData d, boolean isPoi) {
+        LogEvent event = new LogEvent(LogEvent.Type.SPEECH, d.level, d.responseFile, d.artifactUri);
+        event.isPoni = !isPoi;
+        EventRepository.getInstance().addEvent(event);
+
+        if (d.artifactFile != null && d.artifactFile.exists()) {
+            String responseName = (d.responseFile != null) ? d.responseFile.displayName : null;
+            TelegramManager.getInstance().sendAudioEvent(
+                    d.artifactFile.getAbsolutePath(),
+                    (d.wavFile != null) ? d.wavFile.getAbsolutePath() : null,
+                    d.level, responseName, !isPoi, d.startMs, d.endMs);
+        }
+
+        if (isPoi) {
+            pausedRemainingMs = -1;   // POI = real response → fresh reminder delay
+            boolean playedSomething = false;
+            if (SettingsManager.getReminderTrigger(this) == 0) {
+                if (isReminderArmed) {
+                    playReminder();
+                    isReminderArmed = false;
+                    scheduleReminder();
+                    playedSomething = true;
+                }
+            } else if (SettingsManager.getReminderTrigger(this) == 1) {
+                scheduleReminder();
+                DebugLogger.log("POI speech: reminder timer reset with fresh delay.");
+            }
+
+            if (!playedSomething && d.responseFile != null) {
+                if (SettingsManager.isSilentMode(this)) {
+                    EventBus.getInstance().postStatus("Listening... (Silent)");
+                } else {
+                    triggerPlay(d.responseFile);
+                    playedSomething = true;
+                }
+            }
+            if (!playedSomething) {
+                isPaused = false;
+                isProcessingResponse = false;
+                if (!telegramVoiceQueue.isEmpty()) {
+                    playNextTelegramVoice();
+                } else {
+                    if (d.responseFile == null) {
+                        EventBus.getInstance().postStatus("Listening... (No files in Level " + d.level + ")");
+                    } else {
+                        EventBus.getInstance().postStatus("Listening...");
+                    }
+                }
+            }
+        } else {
+            isPaused = false;
+            isProcessingResponse = false;
+            if (!telegramVoiceQueue.isEmpty()) {
+                playNextTelegramVoice();
+            } else {
+                EventBus.getInstance().postStatus("Listening...");
+                resumeReminderTimer();   // PONI: resume with remaining time (invisible)
+            }
+        }
+    }
+
+    /** Build the same-class context WAV, run the final verification, emit. */
+    private void resolvePendingEmit(PendingEvent p, UtteranceMeta next) {
+        List<UtteranceMeta> members = new ArrayList<>();
+        if (p.prev != null && p.prev.isPoi == p.self.isPoi && p.prev.wav != null && p.prev.wav.exists()) {
+            members.add(p.prev);
+        }
+        members.add(p.self);
+        if (next != null && next.isPoi == p.self.isPoi && next.wav != null && next.wav.exists()) {
+            members.add(next);
+        }
+
+        boolean finalPoi = p.self.isPoi;   // fallback = provisional
+        if (members.size() > 1) {
+            File ctx = new File(getAudioDir(this), "ctx_" + System.currentTimeMillis() + ".wav");
+            if (buildContextWav(members, ctx)) {
+                finalPoi = SpeakerVerifier.getInstance(this).verify(ctx);
+                ctx.delete();
+                DebugLogger.log("Context emit: members=" + members.size()
+                        + " final=" + (finalPoi ? "POI" : "PONI"));
+            } else {
+                DebugLogger.log("Context emit: context build failed, provisional used");
+            }
+        } else {
+            DebugLogger.log("Context emit: no same-class neighbors, provisional used");
+        }
+        emitEvent(p.data, finalPoi);
+    }
+
+    /** Concatenate member WAVs with the real inter-utterance gap silence. */
+    private boolean buildContextWav(List<UtteranceMeta> members, File out) {
+        FileOutputStream fos = null;
+        long totalData = 0;
+        try {
+            fos = new FileOutputStream(out);
+            fos.write(new byte[44]);
+            byte[] buf = new byte[65536];
+            byte[] zero = new byte[65536];
+            for (int i = 0; i < members.size(); i++) {
+                if (i > 0) {
+                    long gapMs = members.get(i).startMs - members.get(i - 1).endMs;
+                    if (gapMs < 0) gapMs = 0;
+                    if (gapMs > 60000) gapMs = 60000;
+                    long gapBytes = gapMs * 32;   // 16 kHz mono 16-bit
+                    while (gapBytes > 0) {
+                        int n = (int) Math.min(zero.length, gapBytes);
+                        fos.write(zero, 0, n);
+                        gapBytes -= n;
+                        totalData += n;
+                    }
+                }
+                FileInputStream in = new FileInputStream(members.get(i).wav);
+                try {
+                    long skipped = 0;
+                    while (skipped < 44) {
+                        long s = in.skip(44 - skipped);
+                        if (s <= 0) break;
+                        skipped += s;
+                    }
+                    int r;
+                    while ((r = in.read(buf)) > 0) {
+                        fos.write(buf, 0, r);
+                        totalData += r;
+                    }
+                } finally {
+                    in.close();
+                }
+            }
+            fos.close();
+            fos = null;
+
+            RandomAccessFile raf = new RandomAccessFile(out, "rw");
+            long chunkSize = totalData + 36;
+            int byteRate = 32000;
+            raf.seek(0);
+            byte[] h = new byte[44];
+            h[0]='R'; h[1]='I'; h[2]='F'; h[3]='F';
+            h[4]=(byte)(chunkSize & 0xff); h[5]=(byte)((chunkSize>>8)&0xff); h[6]=(byte)((chunkSize>>16)&0xff); h[7]=(byte)((chunkSize>>24)&0xff);
+            h[8]='W'; h[9]='A'; h[10]='V'; h[11]='E';
+            h[12]='f'; h[13]='m'; h[14]='t'; h[15]=' ';
+            h[16]=16; h[20]=1; h[22]=1;
+            h[24]=(byte)(16000 & 0xff); h[25]=(byte)((16000>>8)&0xff); h[26]=(byte)((16000>>16)&0xff); h[27]=(byte)((16000>>24)&0xff);
+            h[28]=(byte)(byteRate & 0xff); h[29]=(byte)((byteRate>>8)&0xff); h[30]=(byte)((byteRate>>16)&0xff); h[31]=(byte)((byteRate>>24)&0xff);
+            h[32]=2; h[34]=16;
+            h[36]='d'; h[37]='a'; h[38]='t'; h[39]='a';
+            h[40]=(byte)(totalData & 0xff); h[41]=(byte)((totalData>>8)&0xff); h[42]=(byte)((totalData>>16)&0xff); h[43]=(byte)((totalData>>24)&0xff);
+            raf.write(h);
+            raf.close();
+            return true;
+        } catch (Exception e) {
+            DebugLogger.log("buildContextWav failed: " + e);
+            if (fos != null) { try { fos.close(); } catch (Exception ignored) {} }
+            if (out.exists()) out.delete();
+            return false;
         }
     }
 
@@ -1192,7 +1372,19 @@ public class VadService extends Service {
         if (fos != null) { try { fos.close(); } catch (IOException e) {} }
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
         if (audioRecord != null) audioRecord.stop();
-        
+
+        PendingEvent toFlush = null;
+        synchronized (pendingLock) {
+            if (pendingEvent != null) {
+                toFlush = pendingEvent;
+                pendingEvent = null;
+                contextFlushRunnable = null;
+            }
+        }
+        if (toFlush != null) {
+            finalizeExecutor().submit(() -> resolvePendingEmit(toFlush, null));
+        }
+
         if (finalizeExecutor != null) finalizeExecutor.shutdown();
 
         EventBus.getInstance().postVolume(0);
