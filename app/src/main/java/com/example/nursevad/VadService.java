@@ -1373,15 +1373,16 @@ public class VadService extends Service {
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
         if (audioRecord != null) audioRecord.stop();
 
-        PendingEvent toFlush = null;
+        PendingEvent pendingToFlush = null;
         synchronized (pendingLock) {
             if (pendingEvent != null) {
-                toFlush = pendingEvent;
+                pendingToFlush = pendingEvent;
                 pendingEvent = null;
                 contextFlushRunnable = null;
             }
         }
-        if (toFlush != null) {
+        if (pendingToFlush != null) {
+            final PendingEvent toFlush = pendingToFlush;   // lambda-safe single-assignment copy
             finalizeExecutor().submit(() -> resolvePendingEmit(toFlush, null));
         }
 
