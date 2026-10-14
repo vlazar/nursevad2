@@ -51,6 +51,8 @@ public class VadService extends Service {
     // ─── Sliding-context verification (short utterances) ───
     private static final long MIN_RELIABLE_SPEECH_MS = 3000;
     private static final long CONTEXT_FLUSH_WAIT_MS = 4000;
+    private static final long MAX_CONTEXT_GAP_MS = 3000;    // neighbors farther apart than this never enter a context
+    private static final long CONTEXT_DONOR_TTL_MS = 15000; // unreferenced donor WAVs are purged after this
     private volatile long voicedMsAccum = 0;
     private final Object pendingLock = new Object();
     private PendingEvent pendingEvent = null;
@@ -61,7 +63,9 @@ public class VadService extends Service {
         File wav;
         long startMs;
         long endMs;
-        boolean isPoi;   // provisional class
+        boolean isPoi;          // provisional class
+        boolean discardable;    // true for sub-threshold donor utterances (WAV not owned by any emit path)
+        boolean consumed;       // true once snapshotted as a PendingEvent's prev
     }
 
     private static class EmitData {
@@ -512,13 +516,14 @@ public class VadService extends Service {
                 handler.postDelayed(speechDelayRunnable, 100);
                 return;
             } else {
+                maybeRegisterContextDonor(recordedFile, speechStartMs, speechEndMs);
                 isProcessingResponse = false;
                 isPaused = false;
                 if (!telegramVoiceQueue.isEmpty()) {
                     playNextTelegramVoice();
                 } else {
                     EventBus.getInstance().postStatus("Listening...");
-                    resumeReminderTimer();   // short speech: resume with remaining time
+                    resumeReminderTimer();
                 }
                 return;
             }
@@ -616,6 +621,7 @@ public class VadService extends Service {
                 p.data = d;
                 synchronized (pendingLock) {
                     pendingEvent = p;
+                    if (prevMeta != null) prevMeta.consumed = true;
                     contextFlushRunnable = () -> {
                         boolean mine;
                         synchronized (pendingLock) {
@@ -709,11 +715,21 @@ public class VadService extends Service {
     private void resolvePendingEmit(PendingEvent p, UtteranceMeta next) {
         List<UtteranceMeta> members = new ArrayList<>();
         if (p.prev != null && p.prev.isPoi == p.self.isPoi && p.prev.wav != null && p.prev.wav.exists()) {
-            members.add(p.prev);
+            long gap = p.self.startMs - p.prev.endMs;
+            if (gap <= MAX_CONTEXT_GAP_MS) {
+                members.add(p.prev);
+            } else {
+                DebugLogger.log("Context: prev rejected, gap=" + gap + "ms > " + MAX_CONTEXT_GAP_MS + "ms");
+            }
         }
         members.add(p.self);
         if (next != null && next.isPoi == p.self.isPoi && next.wav != null && next.wav.exists()) {
-            members.add(next);
+            long gap = next.startMs - p.self.endMs;
+            if (gap <= MAX_CONTEXT_GAP_MS) {
+                members.add(next);
+            } else {
+                DebugLogger.log("Context: next rejected, gap=" + gap + "ms > " + MAX_CONTEXT_GAP_MS + "ms");
+            }
         }
 
         boolean finalPoi = p.self.isPoi;   // fallback = provisional
@@ -728,9 +744,14 @@ public class VadService extends Service {
                 DebugLogger.log("Context emit: context build failed, provisional used");
             }
         } else {
-            DebugLogger.log("Context emit: no same-class neighbors, provisional used");
+            DebugLogger.log("Context emit: no same-class neighbors within gap, provisional used");
         }
         emitEvent(p.data, finalPoi);
+
+        // Donor WAVs are nobody else's responsibility: purge once resolution is done
+        if (p.prev != null && p.prev.discardable && p.prev.wav != null && p.prev.wav.exists()) {
+            p.prev.wav.delete();
+        }
     }
 
     /** Concatenate member WAVs with the real inter-utterance gap silence. */
@@ -799,6 +820,38 @@ public class VadService extends Service {
             if (out.exists()) out.delete();
             return false;
         }
+    }
+
+    /** Sub-Ignore-Short utterances never emit, but they feed neighbors' verification contexts. */
+    private void maybeRegisterContextDonor(File wav, long startMs, long endMs) {
+        boolean embeddingsOn = SettingsManager.getUseEmbeddings(this)
+                && SettingsManager.getEmbeddingsFolderUri(this) != null
+                && wav != null && wav.exists();
+        if (!embeddingsOn) return;
+        final File fWav = wav;
+        finalizeExecutor().submit(() -> {
+            boolean provisionalPoi = SpeakerVerifier.getInstance(this).verify(fWav);
+            UtteranceMeta donor = new UtteranceMeta();
+            donor.wav = fWav;
+            donor.startMs = startMs;
+            donor.endMs = endMs;
+            donor.isPoi = provisionalPoi;
+            donor.discardable = true;
+            synchronized (pendingLock) { lastUtterance = donor; }
+            DebugLogger.log("Context: donor registered (sub-threshold utterance) class="
+                    + (provisionalPoi ? "POI" : "PONI"));
+            handler.postDelayed(() -> {
+                boolean delete = false;
+                synchronized (pendingLock) {
+                    if (lastUtterance == donor) lastUtterance = null;
+                    if (donor.discardable && !donor.consumed && donor.wav.exists()) delete = true;
+                }
+                if (delete) {
+                    donor.wav.delete();
+                    DebugLogger.log("Context: donor WAV purged (TTL)");
+                }
+            }, CONTEXT_DONOR_TTL_MS);
+        });
     }
 
     private int getLevel(int percent) {
@@ -1384,6 +1437,14 @@ public class VadService extends Service {
         if (pendingToFlush != null) {
             final PendingEvent toFlush = pendingToFlush;   // lambda-safe single-assignment copy
             finalizeExecutor().submit(() -> resolvePendingEmit(toFlush, null));
+        }
+
+        synchronized (pendingLock) {
+            if (lastUtterance != null && lastUtterance.discardable
+                    && lastUtterance.wav != null && lastUtterance.wav.exists()) {
+                lastUtterance.wav.delete();
+            }
+            lastUtterance = null;
         }
 
         if (finalizeExecutor != null) finalizeExecutor.shutdown();
