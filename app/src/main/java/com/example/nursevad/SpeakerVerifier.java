@@ -151,33 +151,37 @@ public class SpeakerVerifier {
 
     // ───────────────────────── Verification ─────────────────────────
 
-    public boolean verify(File wavFile) {
+    public static class VerifyResult {
+        public float score = 1f;     // maxPos against POI references
+        public boolean isPoi = true; // score >= poiThreshold && !poniVeto
+    }
+
+    /** Full verification returning both the similarity score and the thresholded verdict. */
+    public VerifyResult verifyDetailed(File wavFile) {
+        VerifyResult res = new VerifyResult();
         DebugLogger.log("SpeakerVerifier.verify: file=" + wavFile.getName() + ", size=" + wavFile.length() + " bytes");
         if (session == null) {
             DebugLogger.log("SpeakerVerifier.verify: session is null, returning true (POI)");
-            return true;
+            return res;
         }
         if (poiEmbeddings == null || poiEmbeddings.length == 0) {
             DebugLogger.log("SpeakerVerifier.verify: no POI embeddings loaded, returning true (POI)");
-            return true;
+            return res;
         }
         try {
             float[] wav = loadWav(wavFile);
             DebugLogger.log("SpeakerVerifier.verify: loaded " + wav.length + " samples (" + (wav.length / 16000f) + "s)");
-
             float[] embed = extractEmbedding(wav);
             if (embed == null) {
                 DebugLogger.log("SpeakerVerifier.verify: embedding failed, returning true (POI)");
-                return true;
+                return res;
             }
-
             float poiThreshold = SettingsManager.getPoiThreshold(appContext) / 100f;
             float poniThreshold = SettingsManager.getPoniThreshold(appContext) / 100f;
-
             float maxPos = maxCosineSim(poiEmbeddings, embed);
-            DebugLogger.log("SpeakerVerifier.verify: maxPos=" + maxPos + ", poiThreshold=" + poiThreshold);
+            res.score = maxPos;
             boolean isMatch = maxPos >= poiThreshold;
-
+            DebugLogger.log("SpeakerVerifier.verify: maxPos=" + maxPos + ", poiThreshold=" + poiThreshold);
             if (isMatch && poniEmbeddings != null && poniEmbeddings.length > 0) {
                 float maxNeg = maxCosineSim(poniEmbeddings, embed);
                 DebugLogger.log("SpeakerVerifier.verify: maxNeg=" + maxNeg + ", poniThreshold=" + poniThreshold);
@@ -186,12 +190,17 @@ public class SpeakerVerifier {
                     DebugLogger.log("SpeakerVerifier.verify: PONI veto applied!");
                 }
             }
+            res.isPoi = isMatch;
             DebugLogger.log("SpeakerVerifier.verify: final result isMatch=" + isMatch);
-            return isMatch;
+            return res;
         } catch (Exception e) {
             DebugLogger.log("SpeakerVerifier.verify: EXCEPTION " + e.getMessage());
-            return true;
+            return res;
         }
+    }
+
+    public boolean verify(File wavFile) {
+        return verifyDetailed(wavFile).isPoi;
     }
 
     private float maxCosineSim(float[][] refs, float[] target) {

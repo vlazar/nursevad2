@@ -53,7 +53,11 @@ public class VadService extends Service {
     private static final long CONTEXT_FLUSH_WAIT_MS = 4000;
     private static final long MAX_CONTEXT_GAP_MS = 3000;    // neighbors farther apart than this never enter a context
     private static final long CONTEXT_DONOR_TTL_MS = 15000; // unreferenced donor WAVs are purged after this
+    private static final float CONTEXT_MEMBER_FLOOR = 0.30f;  // neighbors scoring below this never enter a context
+    private static final long TAIL_MARGIN_MS = 120;           // silence kept after the last voiced frame
     private volatile long voicedMsAccum = 0;
+    private long writtenBytes = 0;
+    private long voicedEndBytes = 0;
     private final Object pendingLock = new Object();
     private PendingEvent pendingEvent = null;
     private Runnable contextFlushRunnable = null;
@@ -64,6 +68,7 @@ public class VadService extends Service {
         long startMs;
         long endMs;
         boolean isPoi;          // provisional class
+        float score;          // solo POI similarity
         boolean discardable;    // true for sub-threshold donor utterances (WAV not owned by any emit path)
         boolean consumed;       // true once snapshotted as a PendingEvent's prev
     }
@@ -425,6 +430,8 @@ public class VadService extends Service {
                         speechStartMs = SystemClock.elapsedRealtime();
                         accumulatedRms = 0; frameCount = 0; silenceFrames = 0;
                         voicedMsAccum = 0;
+                        writtenBytes = 0;
+                        voicedEndBytes = 0;
 
                         pauseReminderTimer();
 
@@ -465,7 +472,11 @@ public class VadService extends Service {
 
             accumulatedRms += rms;
             frameCount++;
-            if (prob >= 0.4f) voicedMsAccum += 32;   // 512 samples @16kHz = 32 ms
+            writtenBytes += 1024;
+            if (prob >= 0.4f) {
+                voicedMsAccum += 32;
+                voicedEndBytes = writtenBytes;
+            }
             if (prob < 0.4) silenceFrames++;
             else silenceFrames = 0;
 
@@ -479,6 +490,7 @@ public class VadService extends Service {
                 if (fos != null) {
                     try {
                         fos.close();
+                        trimWavTail(recordedFile, voicedEndBytes);
                         updateWavHeader(recordedFile);
                     } catch (IOException e) {}
                     fos = null;
@@ -516,7 +528,7 @@ public class VadService extends Service {
                 handler.postDelayed(speechDelayRunnable, 100);
                 return;
             } else {
-                maybeRegisterContextDonor(recordedFile, speechStartMs, speechEndMs);
+                maybeRegisterContextDonor(recordedFile, speechStartMs);
                 isProcessingResponse = false;
                 isPaused = false;
                 if (!telegramVoiceQueue.isEmpty()) {
@@ -559,13 +571,12 @@ public class VadService extends Service {
                     && SettingsManager.getEmbeddingsFolderUri(this) != null
                     && wavFile != null && wavFile.exists();
 
-            // Provisional pass (also the final pass for reliable-length utterances)
-            boolean provisionalPoi = true;
-            if (embeddingsOn) {
-                provisionalPoi = SpeakerVerifier.getInstance(this).verify(wavFile);
-            }
+            SpeakerVerifier.VerifyResult solo = embeddingsOn
+                    ? SpeakerVerifier.getInstance(this).verifyDetailed(wavFile)
+                    : null;
+            boolean provisionalPoi = (solo != null) ? solo.isPoi : true;
+            float soloScore = (solo != null) ? solo.score : 1f;
 
-            // Transcode as before; WAV retained until outbox commit
             File artifactFile = wavFile;
             String artifactUri = finalRecordedUri;
             if (wavFile != null && wavFile.exists()) {
@@ -583,8 +594,9 @@ public class VadService extends Service {
             UtteranceMeta meta = new UtteranceMeta();
             meta.wav = wavFile;
             meta.startMs = finalStartMs;
-            meta.endMs = finalEndMs;
+            meta.endMs = finalStartMs + Math.max(0, (wavFile.length() - 44) / 32); // trimmed duration
             meta.isPoi = provisionalPoi;
+            meta.score = soloScore;
             UtteranceMeta prevMeta;
             synchronized (pendingLock) { prevMeta = lastUtterance; lastUtterance = meta; }
 
@@ -594,10 +606,9 @@ public class VadService extends Service {
             d.artifactUri = artifactUri;
             d.wavFile = wavFile;
             d.level = finalLevel;
-            d.startMs = finalStartMs;
-            d.endMs = finalEndMs;
+            d.startMs = meta.startMs;
+            d.endMs = meta.endMs;
 
-            // Flush any previous pending event, offering this utterance as its "next" neighbor
             PendingEvent toFlush = null;
             synchronized (pendingLock) {
                 if (pendingEvent != null) {
@@ -611,7 +622,6 @@ public class VadService extends Service {
             }
             if (toFlush != null) resolvePendingEmit(toFlush, meta);
 
-            // Decide: emit now or wait for context
             if (!embeddingsOn || finalVoicedMs >= MIN_RELIABLE_SPEECH_MS) {
                 emitEvent(d, provisionalPoi);
             } else {
@@ -636,7 +646,7 @@ public class VadService extends Service {
                     handler.postDelayed(contextFlushRunnable, CONTEXT_FLUSH_WAIT_MS);
                 }
                 DebugLogger.log("Context: pending short event speechMs=" + finalVoicedMs
-                        + " class=" + (provisionalPoi ? "POI" : "PONI"));
+                        + " soloScore=" + soloScore + " class=" + (provisionalPoi ? "POI" : "PONI"));
             }
             DebugLogger.log("finalizeEvent END");
         };
@@ -714,41 +724,52 @@ public class VadService extends Service {
     /** Build the same-class context WAV, run the final verification, emit. */
     private void resolvePendingEmit(PendingEvent p, UtteranceMeta next) {
         List<UtteranceMeta> members = new ArrayList<>();
-        if (p.prev != null && p.prev.isPoi == p.self.isPoi && p.prev.wav != null && p.prev.wav.exists()) {
-            long gap = p.self.startMs - p.prev.endMs;
-            if (gap <= MAX_CONTEXT_GAP_MS) {
-                members.add(p.prev);
+        if (p.prev != null && p.prev.wav != null && p.prev.wav.exists()) {
+            if (p.prev.score < CONTEXT_MEMBER_FLOOR) {
+                DebugLogger.log("Context: prev rejected, score=" + p.prev.score + " < floor " + CONTEXT_MEMBER_FLOOR);
+            } else if (p.prev.isPoi != p.self.isPoi) {
+                DebugLogger.log("Context: prev rejected, class mismatch");
             } else {
-                DebugLogger.log("Context: prev rejected, gap=" + gap + "ms > " + MAX_CONTEXT_GAP_MS + "ms");
+                long gap = p.self.startMs - p.prev.endMs;
+                if (gap <= MAX_CONTEXT_GAP_MS) members.add(p.prev);
+                else DebugLogger.log("Context: prev rejected, gap=" + gap + "ms > " + MAX_CONTEXT_GAP_MS + "ms");
             }
         }
         members.add(p.self);
-        if (next != null && next.isPoi == p.self.isPoi && next.wav != null && next.wav.exists()) {
-            long gap = next.startMs - p.self.endMs;
-            if (gap <= MAX_CONTEXT_GAP_MS) {
-                members.add(next);
+        if (next != null && next.wav != null && next.wav.exists()) {
+            if (next.score < CONTEXT_MEMBER_FLOOR) {
+                DebugLogger.log("Context: next rejected, score=" + next.score + " < floor " + CONTEXT_MEMBER_FLOOR);
+            } else if (next.isPoi != p.self.isPoi) {
+                DebugLogger.log("Context: next rejected, class mismatch");
             } else {
-                DebugLogger.log("Context: next rejected, gap=" + gap + "ms > " + MAX_CONTEXT_GAP_MS + "ms");
+                long gap = next.startMs - p.self.endMs;
+                if (gap <= MAX_CONTEXT_GAP_MS) members.add(next);
+                else DebugLogger.log("Context: next rejected, gap=" + gap + "ms > " + MAX_CONTEXT_GAP_MS + "ms");
             }
         }
 
-        boolean finalPoi = p.self.isPoi;   // fallback = provisional
+        boolean finalPoi = p.self.isPoi;
+        String window = "solo";
         if (members.size() > 1) {
             File ctx = new File(getAudioDir(this), "ctx_" + System.currentTimeMillis() + ".wav");
             if (buildContextWav(members, ctx)) {
-                finalPoi = SpeakerVerifier.getInstance(this).verify(ctx);
+                SpeakerVerifier.VerifyResult ctxRes = SpeakerVerifier.getInstance(this).verifyDetailed(ctx);
                 ctx.delete();
+                if (ctxRes.score > p.self.score) {
+                    finalPoi = ctxRes.isPoi;   // veto evaluated on the winning window
+                    window = "context";
+                }
                 DebugLogger.log("Context emit: members=" + members.size()
-                        + " final=" + (finalPoi ? "POI" : "PONI"));
+                        + " soloScore=" + p.self.score + " ctxScore=" + ctxRes.score
+                        + " window=" + window + " final=" + (finalPoi ? "POI" : "PONI"));
             } else {
-                DebugLogger.log("Context emit: context build failed, provisional used");
+                DebugLogger.log("Context emit: context build failed, solo used");
             }
         } else {
-            DebugLogger.log("Context emit: no same-class neighbors within gap, provisional used");
+            DebugLogger.log("Context emit: no eligible neighbors, solo used (score=" + p.self.score + ")");
         }
         emitEvent(p.data, finalPoi);
 
-        // Donor WAVs are nobody else's responsibility: purge once resolution is done
         if (p.prev != null && p.prev.discardable && p.prev.wav != null && p.prev.wav.exists()) {
             p.prev.wav.delete();
         }
@@ -822,24 +843,47 @@ public class VadService extends Service {
         }
     }
 
+    /** F1: cut the ~0.5 s trailing silence window so embeddings see dense speech. */
+    private void trimWavTail(File f, long voicedEndBytes) {
+        try {
+            long current = f.length();
+            long keep = 44 + voicedEndBytes + TAIL_MARGIN_MS * 32;
+            long minKeep = 44 + 3200;
+            if (keep < minKeep) keep = minKeep;
+            if (keep >= current) return;
+            RandomAccessFile raf = new RandomAccessFile(f, "rw");
+            raf.setLength(keep);
+            raf.close();
+            DebugLogger.log("Trimmed WAV tail: " + current + " -> " + keep + " bytes");
+        } catch (Exception e) {
+            DebugLogger.log("trimWavTail failed: " + e);
+        }
+    }
+
     /** Sub-Ignore-Short utterances never emit, but they feed neighbors' verification contexts. */
-    private void maybeRegisterContextDonor(File wav, long startMs, long endMs) {
+    private void maybeRegisterContextDonor(File wav, long startMs) {
         boolean embeddingsOn = SettingsManager.getUseEmbeddings(this)
                 && SettingsManager.getEmbeddingsFolderUri(this) != null
                 && wav != null && wav.exists();
         if (!embeddingsOn) return;
         final File fWav = wav;
         finalizeExecutor().submit(() -> {
-            boolean provisionalPoi = SpeakerVerifier.getInstance(this).verify(fWav);
+            SpeakerVerifier.VerifyResult r = SpeakerVerifier.getInstance(this).verifyDetailed(fWav);
+            if (r.score < CONTEXT_MEMBER_FLOOR) {
+                DebugLogger.log("Context: donor rejected (score=" + r.score + " < floor " + CONTEXT_MEMBER_FLOOR + ")");
+                if (fWav.exists()) fWav.delete();
+                return;
+            }
             UtteranceMeta donor = new UtteranceMeta();
             donor.wav = fWav;
             donor.startMs = startMs;
-            donor.endMs = endMs;
-            donor.isPoi = provisionalPoi;
+            donor.endMs = startMs + Math.max(0, (fWav.length() - 44) / 32);
+            donor.isPoi = r.isPoi;
+            donor.score = r.score;
             donor.discardable = true;
             synchronized (pendingLock) { lastUtterance = donor; }
             DebugLogger.log("Context: donor registered (sub-threshold utterance) class="
-                    + (provisionalPoi ? "POI" : "PONI"));
+                    + (r.isPoi ? "POI" : "PONI") + " score=" + r.score);
             handler.postDelayed(() -> {
                 boolean delete = false;
                 synchronized (pendingLock) {
